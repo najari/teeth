@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>치열 3D 개략 모형</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* 레이아웃: 화면을 채우는 3D 무대 하나, 그 아래 조작 패널 한 장 */
+  --bg: #e7ecea;
+  --stage-hi: #f6f8f7;
+  --panel: #fafbfa;
+  --ink: #162324;
+  --muted: #55676a;
+  --line: #cdd7d5;
+  --accent: #0c7268;
+  --accent-ink: #ffffff;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+  --font-display: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101718;
+    --stage-hi: #1c2829;
+    --panel: #172122;
+    --ink: #e4edec;
+    --muted: #93a6a6;
+    --line: #2a393a;
+    --accent: #52cdbd;
+    --accent-ink: #06211e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101718;
+  --stage-hi: #1c2829;
+  --panel: #172122;
+  --ink: #e4edec;
+  --muted: #93a6a6;
+  --line: #2a393a;
+  --accent: #52cdbd;
+  --accent-ink: #06211e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  -webkit-text-size-adjust: 100%;
+}
+header {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  padding: 10px 16px 8px;
+}
+h1 {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  text-wrap: balance;
+}
+.count { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; display: flex; flex-wrap: wrap; gap: 0 14px; }
+.count span { white-space: nowrap; }
+#stage {
+  flex: 1 1 auto;
+  min-height: 280px;
+  position: relative;
+  background: radial-gradient(ellipse at 50% 42%, var(--stage-hi), var(--bg) 78%);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+#stage canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+#info {
+  position: absolute;
+  left: 12px; right: 12px; top: 10px;
+  pointer-events: none;
+  display: flex;
+}
+#info span {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  max-width: 100%;
+}
+#info b { font-weight: 600; font-variant-numeric: tabular-nums; }
+#legend {
+  position: absolute;
+  left: 12px; right: 12px; bottom: 8px;
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+  font-size: 12px; color: var(--muted);
+  pointer-events: none;
+}
+#legend i {
+  display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  margin-right: 5px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.25);
+}
+#legend .brk { flex-basis: 100%; height: 0; }
+#fallback { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--muted); }
+.panel {
+  flex: none;
+  background: var(--panel);
+  padding: 10px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.row > .lab { color: var(--muted); font-size: 12px; flex: none; width: 34px; }
+button {
+  font: inherit; font-size: 13px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 11px;
+  min-height: 34px;
+  cursor: pointer;
+}
+button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.slider { flex: 1 1 140px; display: flex; align-items: center; gap: 8px; }
+input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; height: 28px; }
+.note { margin: 0; color: var(--muted); font-size: 12px; max-width: 65ch; }
+</style>
+</head>
+<body>
+<header>
+  <h1>치열 3D 개략 모형</h1>
+  <div class="count" id="count"></div>
+</header>
+
+<div id="stage">
+  <div id="fallback">이 기기에서는 3D 화면(WebGL)을 열 수 없습니다. 다른 브라우저나 기기에서 다시 열어 주세요.</div>
+  <div id="info"><span id="infoText">치아나 뼈를 누르면 상태가 나옵니다. 한 손가락으로 돌리고 두 손가락으로 확대합니다.</span></div>
+  <div id="legend">
+    <span><i style="background:#efe5c8"></i>보이는 치아</span>
+    <span data-lg="pre"><i style="background:#6a4a2e"></i>뿌리만 남음</span>
+    <span data-lg="pre"><i style="background:#b9a67c"></i>침착물</span>
+    <span><i style="background:rgba(40,170,155,.35)"></i>빈 자리</span>
+    <span class="brk" data-lg="bone"></span>
+    <span data-lg="bone">뼈 높이</span>
+    <span data-lg="bone"><i data-bone="5"></i>많이 낮음</span>
+    <span data-lg="bone"><i data-bone="6"></i>낮음</span>
+    <span data-lg="bone"><i data-bone="1"></i>다소 낮음</span>
+    <span data-lg="bone"><i data-bone="4"></i>남아 있음</span>
+    <span data-lg="bone"><i data-bone="2"></i>판독 어려움</span>
+    <span class="brk" data-lg="plan"></span>
+    <span data-lg="extract"><i style="background:#d9534a"></i>발치 예정</span>
+    <span data-lg="after"><i style="background:#aab3bd"></i>임플란트</span>
+    <span data-lg="after"><i style="background:#f3f0e6"></i>임플란트 보철</span>
+    <span data-lg="after"><i style="background:#c9dcee"></i>가짜 치아</span>
+    <span data-lg="after"><i style="background:#e6d9f0"></i>지르코니아 크라운</span>
+    <span data-lg="after"><i style="background:#7fc8b4"></i>뼈 이식</span>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="row" role="group" aria-label="치료 단계">
+    <span class="lab">단계</span>
+    <button type="button" id="m-current" data-mode="current" aria-pressed="true">현재</button>
+    <button type="button" id="m-extract" data-mode="extract" aria-pressed="false">발치 예정</button>
+    <button type="button" id="m-after" data-mode="after" aria-pressed="false">치료 후</button>
+  </div>
+  <div class="row" role="group" aria-label="보는 방향">
+    <span class="lab">방향</span>
+    <button type="button" id="v-front" data-view="front" aria-pressed="true">정면</button>
+    <button type="button" id="v-right" data-view="right" aria-pressed="false">오른쪽</button>
+    <button type="button" id="v-left" data-view="left" aria-pressed="false">왼쪽</button>
+    <button type="button" id="v-upper" data-view="upper" aria-pressed="false">위턱 씹는 면</button>
+    <button type="button" id="v-lower" data-view="lower" aria-pressed="false">아래턱 씹는 면</button>
+  </div>
+  <div class="row" role="group" aria-label="표시 항목">
+    <span class="lab">표시</span>
+    <button type="button" id="t-upper" data-toggle="upper" aria-pressed="true">위턱</button>
+    <button type="button" id="t-lower" data-toggle="lower" aria-pressed="true">아래턱</button>
+    <button type="button" id="t-gum" data-toggle="gum" aria-pressed="true">잇몸</button>
+    <button type="button" id="t-bone" data-toggle="bone" aria-pressed="true">뼈</button>
+    <button type="button" id="t-ghost" data-toggle="ghost" aria-pressed="true">빈 자리</button>
+  </div>
+  <div class="row">
+    <label class="lab" for="open">벌림</label>
+    <div class="slider"><input type="range" id="open" min="0" max="26" step="1" value="5"></div>
+  </div>
+  <p class="note">설명용 모형이며 진단 자료가 아닙니다. 치료 단계는 2026년 11월 13일 견적서(양쪽 송곳니 발치안)의 표기를 읽어 옮겼고, 송곳니 발치 여부는 아직 정해지지 않았습니다. 뼈 높이는 단계값이고 치아와 임플란트 모양은 표준형입니다. 좌우는 본인 기준입니다.</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function () {
+  'use strict';
+  var stage = document.getElementById('stage');
+  var THREE = window.THREE;
+  var renderer = null;
+  if (THREE) {
+    try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); } catch (e) { renderer = null; }
+  }
+  if (!renderer) {
+    document.getElementById('fallback').style.display = 'flex';
+    document.getElementById('info').style.display = 'none';
+    document.getElementById('legend').style.display = 'none';
+    return;
+  }
+
+  /* ---------- 사진에서 옮긴 내용 ---------- */
+  // FDI 번호. 표시가 없는 번호는 사진에서 치아가 보이는 자리.
+  var STATUS = { 27: 'missing', 37: 'missing', 42: 'missing', 45: 'stump', 46: 'root', 47: 'root' };
+  var DEPOSIT = { 43: 1, 41: 1, 31: 1, 32: 1, 33: 1 };
+  // 2026-11-13 견적서(아래턱, 양쪽 송곳니 발치안)의 치식 표기를 옮긴 것
+  var PLAN = {
+    47: { ext: 1, implant: 1 }, 46: { ext: 1, implant: 1, graft: 'simple' }, 45: { ext: 1, implant: 1, graft: 'simple' },
+    44: { crown: 1 }, 43: { ext: 1, implant: 1, graft: 'complex', bridge: 1 },
+    42: { pontic: 1 }, 41: { ext: 1, pontic: 1 }, 31: { ext: 1, pontic: 1 }, 32: { ext: 1, pontic: 1 },
+    33: { ext: 1, implant: 1, graft: 'complex', bridge: 1 }, 34: { crown: 1 }, 35: { crown: 1 },
+    36: { ext: 1, implant: 1, graft: 'simple' }
+  };
+  var PLAN_COLORS = { implantCrown: 0xf3f0e6, pontic: 0xc9dcee, zirconia: 0xe6d9f0, extract: 0xd9534a, fixture: 0xaab3bd, graftSimple: 0x7fc8b4, graftComplex: 0x3f9f8a };
+  var ADJ = { 22: { inset: 0.9, rot: 8 }, 23: { inset: -0.6 }, 13: { inset: -0.4 } };
+  // 엑스레이·사진을 눈으로 보고 구역별로 나눈 추정. loss는 치아 목에서 뼈 가장자리까지의 표시용 단계값(mm 실측 아님)
+  var REGIONS = {
+    1: { name: '위 오른쪽 어금니 구역', loss: 3.5, red: 0.15, color: 0xebcd3c, level: '다소 낮음', bone: '뼈 높이가 다소 낮아 보입니다(경계가 흐려 확실하지 않음)', gum: '잇몸 색은 고른 편입니다' },
+    2: { name: '위 앞니 구역', loss: 3.0, red: 0.8, color: 0xaab2b9, level: '판독 어려움', bone: '엑스레이가 겹치고 흐려 뼈 높이를 판독하기 어렵습니다', gum: '잇몸 경계가 붉고 부어 보입니다' },
+    3: { name: '위 왼쪽 어금니 구역', loss: 3.5, red: 0.15, color: 0xebcd3c, level: '다소 낮음', bone: '뼈 높이가 다소 낮아 보입니다', gum: '잇몸 색은 고른 편입니다' },
+    4: { name: '아래 오른쪽 어금니 구역', loss: 2.5, red: 0.3, color: 0x50a5eb, level: '남아 있음', bone: '뿌리 아래 턱뼈 높이는 남아 있어 보입니다', gum: '뿌리만 남은 자리 주변입니다' },
+    5: { name: '아래 앞니 구역', loss: 6.5, red: 0.75, color: 0xe8483c, level: '많이 낮음', bone: '뼈가 가장 많이 줄어 보입니다(파노라마 특성상 실제보다 심하게 보일 수 있음)', gum: '잇몸이 붉고 내려가 뿌리 쪽이 드러나 보입니다' },
+    6: { name: '아래 왼쪽 어금니 구역', loss: 5.0, red: 0.15, color: 0xf09628, level: '낮음', bone: '뼈 높이가 낮아 보이고 큰어금니 뿌리 사이도 어둡게 보입니다', gum: '잇몸 색은 고른 편입니다' }
+  };
+  var RECESS = { 42: 2.2, 41: 2.2, 31: 2.2, 32: 2.2, 43: 1.2, 33: 1.2 };
+  function regionOf(fdi) { var q = Math.floor(fdi / 10), n = fdi % 10; if (n <= 3) return q <= 2 ? 2 : 5; return { 1: 1, 2: 3, 3: 6, 4: 4 }[q]; }
+
+  var NAMES = ['가운데 앞니', '옆 앞니', '송곳니', '첫째 작은어금니', '둘째 작은어금니', '첫째 큰어금니', '둘째 큰어금니'];
+  var QUAD = { 1: '위 오른쪽', 2: '위 왼쪽', 3: '아래 왼쪽', 4: '아래 오른쪽' };
+  var STATUS_TEXT = {
+    present: '사진에서 치아가 보입니다',
+    missing: '사진에서 치아가 보이지 않습니다',
+    root: '머리 부분 없이 뿌리만 남은 것으로 보입니다',
+    stump: '머리 부분이 거의 없고 밑동만 남은 것으로 보입니다'
+  };
+
+  /* ---------- 표준 치아 치수 (mm) ---------- */
+  var U = [
+    { k: 'ci', w: 8.6, d: 7.0, h: 10.5, tilt: 18, root: 13 },
+    { k: 'li', w: 6.6, d: 6.2, h: 9.5, tilt: 16, root: 13 },
+    { k: 'ca', w: 7.6, d: 8.0, h: 10.5, tilt: 9, root: 16 },
+    { k: 'pm', w: 7.0, d: 9.0, h: 8.2, tilt: 3, root: 13 },
+    { k: 'pm', w: 6.6, d: 9.0, h: 7.6, tilt: 3, root: 13 },
+    { k: 'mo', w: 10.2, d: 11.0, h: 7.2, tilt: 2, root: 12 },
+    { k: 'mo', w: 9.2, d: 10.8, h: 6.8, tilt: 2, root: 11 }
+  ];
+  var L = [
+    { k: 'ci', w: 5.2, d: 5.8, h: 9.0, tilt: 14, root: 12 },
+    { k: 'li', w: 5.8, d: 6.0, h: 9.3, tilt: 13, root: 13 },
+    { k: 'ca', w: 6.9, d: 7.4, h: 10.5, tilt: 8, root: 15 },
+    { k: 'pm', w: 7.0, d: 7.8, h: 8.2, tilt: 3, root: 13 },
+    { k: 'pm', w: 7.2, d: 8.2, h: 7.8, tilt: 2, root: 13 },
+    { k: 'mo', w: 11.0, d: 10.4, h: 7.4, tilt: 0, root: 12 },
+    { k: 'mo', w: 10.4, d: 10.0, h: 7.0, tilt: 0, root: 11 }
+  ];
+
+  function sstep(a, b, x) { x = Math.min(1, Math.max(0, (x - a) / (b - a))); return x * x * (3 - 2 * x); }
+
+  /* ---------- 치열궁 곡선: x = a·sin t, z = z0 + b·(cos t − 1) ---------- */
+  function makeArch(a, b, z0) {
+    var N = 600, tMax = Math.PI * 0.54, ts = [], ss = [], s = 0, px = 0, pz = z0;
+    for (var i = 0; i <= N; i++) {
+      var t = tMax * i / N, x = a * Math.sin(t), z = z0 + b * (Math.cos(t) - 1);
+      if (i > 0) s += Math.hypot(x - px, z - pz);
+      ts.push(t); ss.push(s); px = x; pz = z;
+    }
+    var total = s;
+    function tAt(sa) {
+      sa = Math.min(sa, total);
+      var lo = 0, hi = N;
+      while (hi - lo > 1) { var m = (lo + hi) >> 1; if (ss[m] < sa) lo = m; else hi = m; }
+      var f = (sa - ss[lo]) / ((ss[hi] - ss[lo]) || 1);
+      return ts[lo] + (ts[hi] - ts[lo]) * f;
+    }
+    return {
+      a: a, b: b, z0: z0, total: total,
+      at: function (sSigned) {
+        var sg = sSigned < 0 ? -1 : 1, t = tAt(Math.abs(sSigned));
+        var x = sg * a * Math.sin(t), z = z0 + b * (Math.cos(t) - 1);
+        var tx = sg * a * Math.cos(t), tz = -b * Math.sin(t), l = Math.hypot(tx, tz);
+        tx /= l; tz /= l;
+        var nx = sg > 0 ? -tz : tz, nz = sg > 0 ? tx : -tx;
+        return { x: x, z: z, nx: nx, nz: nz, angle: Math.atan2(nx, nz) };
+      }
+    };
+  }
+  var archU = makeArch(28, 46, 0);
+  var archL = makeArch(26, 43, -3);
+
+  /* ---------- 모양 만들기: 구를 변형해 치아 머리·뿌리를 만든다 ---------- */
+  function sq(d, n) {
+    var k = Math.pow(Math.pow(Math.abs(d.x), n) + Math.pow(Math.abs(d.y), n) + Math.pow(Math.abs(d.z), n), -1 / n);
+    return { x: d.x * k, y: d.y * k, z: d.z * k };
+  }
+  function crownFn(sp) {
+    return function (dir) {
+      var grind = sp.k === 'mo' || sp.k === 'pm';
+      var q = sq(dir, grind ? 5 : 4);
+      var v = (q.y + 1) / 2;
+      var neck = 0.74 + 0.26 * sstep(0, 0.45, v);
+      var wx, dz, y = v * sp.h, zoff = 0;
+      if (sp.k === 'ci' || sp.k === 'li') {
+        wx = neck * (1 - 0.06 * sstep(0.8, 1, v));
+        dz = 1 - 0.74 * Math.pow(v, 1.15);
+        zoff = sp.d * 0.10 * v;
+      } else if (sp.k === 'ca') {
+        wx = neck * (1 - 0.72 * Math.pow(sstep(0.55, 1, v), 1.3));
+        dz = 1 - 0.62 * Math.pow(v, 1.3);
+        zoff = sp.d * 0.06 * v;
+      } else {
+        wx = neck * (1 - 0.10 * sstep(0.6, 1, v));
+        dz = (0.80 + 0.20 * sstep(0, 0.4, v)) * (1 - 0.14 * sstep(0.6, 1, v));
+        var top = sstep(0.35, 0.92, q.y), bump = 0;
+        var cus = sp.k === 'mo'
+          ? [[-0.48, 0.5, 1.5], [0.48, 0.5, 1.4], [-0.48, -0.5, 1.3], [0.48, -0.5, 1.2]]
+          : [[0, 0.52, 1.7], [0, -0.5, 1.2]];
+        for (var i = 0; i < cus.length; i++) {
+          var dx = q.x - cus[i][0], dzz = q.z - cus[i][1];
+          bump += cus[i][2] * Math.exp(-(dx * dx + dzz * dzz) / 0.16);
+        }
+        bump -= 1.1 * Math.exp(-(q.x * q.x * 0.6 + q.z * q.z) / 0.10);
+        y += top * (bump - 0.9) * (sp.cuspScale == null ? 1 : sp.cuspScale);
+      }
+      return { x: q.x * sp.w / 2 * wx, y: y, z: q.z * sp.d / 2 * dz + zoff };
+    };
+  }
+  // 잇몸 경계의 침착물: 치아 목 부분을 살짝 감싸는 띠
+  function collarFn(sp) {
+    return function (dir) {
+      var q = sq(dir, 4), v = (q.y + 1) / 2, vv = v * 0.42;
+      var neck = 0.74 + 0.26 * sstep(0, 0.45, vv);
+      var dz = sp.k === 'ca' ? 1 - 0.62 * Math.pow(vv, 1.3) : 1 - 0.74 * Math.pow(vv, 1.15);
+      var zoff = sp.d * (sp.k === 'ca' ? 0.06 : 0.10) * vv;
+      return { x: q.x * sp.w / 2 * neck * 1.12, y: vv * sp.h, z: q.z * (sp.d / 2 * dz + 0.55) + zoff };
+    };
+  }
+  function rootFn(w, d, len) {
+    return function (dir) {
+      var q = sq(dir, 2.6), u = (1 - q.y) / 2;
+      var rf = 1 - 0.7 * Math.pow(u, 1.5);
+      return { x: q.x * w / 2 * rf, y: 0.6 - u * (len + 0.6), z: q.z * d / 2 * rf };
+    };
+  }
+  function deform(fn, segW, segH) {
+    var g = new THREE.SphereGeometry(1, segW, segH);
+    var pos = g.attributes.position, nor = g.attributes.normal;
+    var d = new THREE.Vector3(), t1 = new THREE.Vector3(), t2 = new THREE.Vector3();
+    var p0 = new THREE.Vector3(), p1 = new THREE.Vector3(), p2 = new THREE.Vector3(), n = new THREE.Vector3();
+    var up = new THREE.Vector3(0, 1, 0), alt = new THREE.Vector3(1, 0, 0), e = 2e-3, tmp = new THREE.Vector3();
+    for (var i = 0; i < pos.count; i++) {
+      d.fromBufferAttribute(pos, i).normalize();
+      t1.crossVectors(Math.abs(d.y) > 0.99 ? alt : up, d).normalize();
+      t2.crossVectors(d, t1).normalize();
+      var a = fn(d); p0.set(a.x, a.y, a.z);
+      var b = fn(tmp.copy(d).addScaledVector(t1, e).normalize()); p1.set(b.x, b.y, b.z);
+      var c = fn(tmp.copy(d).addScaledVector(t2, e).normalize()); p2.set(c.x, c.y, c.z);
+      n.crossVectors(p1.sub(p0), p2.sub(p0));
+      if (n.lengthSq() < 1e-14) n.copy(d); else n.normalize();
+      pos.setXYZ(i, a.x, a.y, a.z);
+      nor.setXYZ(i, n.x, n.y, n.z);
+    }
+    pos.needsUpdate = true; nor.needsUpdate = true;
+    g.computeBoundingSphere(); g.computeBoundingBox();
+    return g;
+  }
+
+  /* ---------- 재질 ---------- */
+  function lin(hex) { return new THREE.Color(hex).convertSRGBToLinear(); }
+  function mat(color, rough) { return new THREE.MeshStandardMaterial({ color: lin(color), roughness: rough, metalness: 0 }); }
+  var COLORS = { crown: 0xefe5c8, root: 0xdccba3, stump: 0xa98758, rootcap: 0x6a4a2e, deposit: 0xb9a67c, gum: 0xd5848b, palate: 0xdb9799 };
+  var gumMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0, side: THREE.DoubleSide });
+  var boneMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0, side: THREE.DoubleSide });
+  var BONE_BASE = lin(0xe8dcc0);
+  Object.keys(REGIONS).forEach(function (k) { var R = REGIONS[k]; R.lin = BONE_BASE.clone().lerp(lin(R.color), 0.68); });
+  var palateMat = mat(COLORS.palate, 0.6); palateMat.side = THREE.DoubleSide;
+  var implantMat = new THREE.MeshStandardMaterial({ color: lin(PLAN_COLORS.fixture), roughness: 0.4, metalness: 0.35, side: THREE.DoubleSide });
+  var graftSimpleMat = mat(PLAN_COLORS.graftSimple, 0.9), graftComplexMat = mat(PLAN_COLORS.graftComplex, 0.9);
+  var EXT_COLOR = lin(PLAN_COLORS.extract);
+  var graftGeo = new THREE.SphereGeometry(1, 16, 12);
+  // 임플란트 몸체: 나사산이 있는 회전체. y=0이 윗면, 아래로 len만큼 내려간다
+  function fixtureGeo(r, len) {
+    var pts = [new THREE.Vector2(0.001, 1.6), new THREE.Vector2(r * 0.72, 1.6), new THREE.Vector2(r * 0.8, 0.2), new THREE.Vector2(r, 0)];
+    var n = Math.round(len / 0.7);
+    for (var k = 1; k <= n; k++) {
+      var taper = 1 - 0.35 * Math.pow(k / n, 2.2);
+      pts.push(new THREE.Vector2(r * taper * (k % 2 ? 0.86 : 1), -len * k / n));
+    }
+    pts.push(new THREE.Vector2(0.001, -len - 0.4));
+    return new THREE.LatheGeometry(pts, 20);
+  }
+  var ghostMat = new THREE.MeshBasicMaterial({ color: lin(0x28aa9b), transparent: true, opacity: 0.3, depthWrite: false });
+
+  var scene = new THREE.Scene();
+  var upperGroup = new THREE.Group(), lowerPivot = new THREE.Group(), lowerGroup = new THREE.Group();
+  var PIVOT = new THREE.Vector3(0, 14, -80);
+  lowerPivot.position.copy(PIVOT);
+  lowerGroup.position.copy(PIVOT).multiplyScalar(-1);
+  lowerPivot.add(lowerGroup);
+  scene.add(upperGroup, lowerPivot);
+
+  var pickables = [], gumRidges = [], boneMeshes = [], palateMesh = null, ghostMeshes = [], teeth = {};
+  var geoCache = {};
+  function cached(key, make) { return geoCache[key] || (geoCache[key] = make()); }
+
+  function tipY(jaw, k) {
+    if (jaw === 'U') return (k === 'ci' || k === 'li') ? -1.0 : (k === 'ca' ? -0.8 : 0.8);
+    return (k === 'ci' || k === 'li') ? 1.6 : (k === 'ca' ? 0.6 : -0.8);
+  }
+
+  function addRoots(parent, jaw, i, sp, material, info) {
+    var list;
+    if (sp.k !== 'mo') list = [[0, 0, sp.w * 0.72, sp.d * 0.78, sp.root]];
+    else if (jaw === 'L') list = [[-sp.w * 0.24, 0, sp.w * 0.44, sp.d * 0.74, sp.root], [sp.w * 0.24, 0, sp.w * 0.42, sp.d * 0.7, sp.root - 1]];
+    else list = [[-sp.w * 0.24, sp.d * 0.2, sp.w * 0.42, sp.d * 0.4, sp.root - 1], [sp.w * 0.24, sp.d * 0.2, sp.w * 0.4, sp.d * 0.38, sp.root - 1.5], [0, -sp.d * 0.24, sp.w * 0.5, sp.d * 0.42, sp.root]];
+    list.forEach(function (r, j) {
+      var g = cached('root' + jaw + i + '_' + j, function () { return deform(rootFn(r[2], r[3], r[4]), 14, 12); });
+      var m = new THREE.Mesh(g, material);
+      m.position.set(r[0], 0, r[1]);
+      m.userData.tooth = info;
+      parent.add(m); pickables.push(m); info.rootMeshes.push(m);
+    });
+  }
+
+  function addPlan(parent, jaw, i, sp, info, crownGeo, st) {
+    var pl = info.plan; if (!pl) return;
+    var lift = st === 'present' ? 0 : 1.3;      // 낮춰 둔 자리는 보철 높이를 이웃과 맞춘다
+    function add(mesh) { mesh.visible = false; mesh.userData.tooth = info; parent.add(mesh); pickables.push(mesh); info.planMeshes.push(mesh); return mesh; }
+    if (pl.implant) {
+      var molar = sp.k === 'mo', r = molar ? 2.3 : 1.9, len = molar ? 10 : 11.5;
+      var fx = add(new THREE.Mesh(cached('fix' + (molar ? 'M' : 'A'), function () { return fixtureGeo(r, len); }), implantMat));
+      fx.position.y = lift - 1.5;
+      if (pl.graft) {
+        var k = pl.graft === 'complex' ? 1.25 : 1;
+        var gr = add(new THREE.Mesh(graftGeo, pl.graft === 'complex' ? graftComplexMat : graftSimpleMat));
+        gr.scale.set(sp.w * 0.5 * k, 2.4 * k, sp.d * 0.5 * k); gr.position.y = lift - 4.2;
+      }
+    }
+    var pm = mat(pl.crown ? PLAN_COLORS.zirconia : (pl.pontic ? PLAN_COLORS.pontic : PLAN_COLORS.implantCrown), 0.22);
+    info.planMats.push(pm);
+    var pc = add(new THREE.Mesh(crownGeo, pm));
+    pc.position.y = lift + (pl.pontic ? 0.4 : 0);
+  }
+
+  function buildJaw(jaw) {
+    var specs = jaw === 'U' ? U : L, arch = jaw === 'U' ? archU : archL;
+    var group = jaw === 'U' ? upperGroup : lowerGroup, necks = [], sum = 0;
+    [-1, 1].forEach(function (side) {
+      var s = 0;
+      specs.forEach(function (sp, i) {
+        var sc = side * (s + sp.w / 2); s += sp.w;
+        var quad = jaw === 'U' ? (side < 0 ? 1 : 2) : (side < 0 ? 4 : 3);
+        var fdi = quad * 10 + i + 1, st = STATUS[fdi] || 'present';
+        var p = arch.at(sc), tilt = sp.tilt * Math.PI / 180, adj = ADJ[fdi] || {};
+        var dirY = jaw === 'U' ? 1 : -1;
+        var inset = sp.h * Math.sin(tilt) + (adj.inset || 0);
+        var neckY = tipY(jaw, sp.k) + dirY * sp.h * Math.cos(tilt);
+        if (st !== 'present') neckY += dirY * 1.3;   // 치아가 없는 자리는 잇몸 높이가 조금 낮다
+        var region = regionOf(fdi), R = REGIONS[region];
+        necks.push({ s: sc, y: neckY, inset: inset, tilt: Math.tan(tilt), loss: R.loss, red: R.red, recess: RECESS[fdi] || 0, cr: R.lin.r, cg: R.lin.g, cb: R.lin.b });
+
+        var info = { fdi: fdi, jaw: jaw, region: region, name: QUAD[quad] + ' ' + NAMES[i], status: st, deposit: !!DEPOSIT[fdi], mats: [],
+          plan: PLAN[fdi] || null, rootMeshes: [], crownMeshes: [], planMeshes: [], planMats: [], ghost: null };
+        teeth[fdi] = info;
+        var g = new THREE.Group();
+        g.position.set(p.x - p.nx * inset, neckY, p.z - p.nz * inset);
+        info.pos = g.position;
+        g.rotation.y = p.angle + (adj.rot || 0) * Math.PI / 180;
+        var tiltG = new THREE.Group(); tiltG.rotation.x = jaw === 'U' ? -tilt : tilt;
+        var flip = new THREE.Group(); if (jaw === 'U') flip.rotation.z = Math.PI;
+        g.add(tiltG); tiltG.add(flip); group.add(g);
+
+        var crownGeo = cached('crown' + jaw + i, function () { return deform(crownFn(sp), 36, 26); });
+        if (st === 'missing') {
+          var gm = new THREE.Mesh(crownGeo, ghostMat);
+          gm.userData.tooth = info; gm.renderOrder = 2;
+          flip.add(gm); ghostMeshes.push(gm); pickables.push(gm); info.ghost = gm;
+          addPlan(flip, jaw, i, sp, info, crownGeo, st);
+          return;
+        }
+        var rootMat = mat(COLORS.root, 0.55); info.mats.push(rootMat);
+        addRoots(flip, jaw, i, sp, rootMat, info);
+        var cm, crownMat;
+        if (st === 'present') {
+          crownMat = mat(COLORS.crown, 0.3);
+          cm = new THREE.Mesh(crownGeo, crownMat);
+        } else {
+          var low = st === 'stump' ? 3.0 : 1.7;
+          var sp2 = { k: sp.k, w: sp.w * 0.9, d: sp.d * 0.88, h: low, cuspScale: st === 'stump' ? 0.5 : 0.75 };
+          crownMat = mat(st === 'stump' ? COLORS.stump : COLORS.rootcap, 0.85);
+          cm = new THREE.Mesh(cached('rem' + jaw + i + st, function () { return deform(crownFn(sp2), 28, 20); }), crownMat);
+        }
+        info.mats.push(crownMat);
+        cm.userData.tooth = info; flip.add(cm); pickables.push(cm); info.crownMeshes.push(cm);
+        if (info.deposit) {
+          var dm = mat(COLORS.deposit, 0.95); info.mats.push(dm);
+          var col = new THREE.Mesh(cached('col' + jaw + i, function () { return deform(collarFn(sp), 28, 14); }), dm);
+          col.userData.tooth = info; flip.add(col); pickables.push(col); info.crownMeshes.push(col);
+        }
+        addPlan(flip, jaw, i, sp, info, crownGeo, st);
+      });
+      sum = s;
+    });
+    necks.sort(function (a, b) { return a.s - b.s; });
+    var KEYS = ['y', 'inset', 'tilt', 'loss', 'red', 'recess', 'cr', 'cg', 'cb'];
+    function margin(s) {
+      if (s <= necks[0].s) return necks[0];
+      for (var i = 1; i < necks.length; i++) {
+        if (s <= necks[i].s) {
+          var a = necks[i - 1], b = necks[i], f = (s - a.s) / (b.s - a.s), o = {};
+          KEYS.forEach(function (k) { o[k] = a[k] + (b[k] - a[k]) * f; });
+          return o;
+        }
+      }
+      return necks[necks.length - 1];
+    }
+    var gum = new THREE.Mesh(buildRidge(arch, jaw, margin, sum + 2.6, 'gum'), gumMat);
+    gum.userData.ridge = jaw; gum.renderOrder = 3; group.add(gum); gumRidges.push(gum);
+    var bone = new THREE.Mesh(buildRidge(arch, jaw, margin, sum + 1.6, 'bone'), boneMat);
+    bone.userData.ridge = jaw; group.add(bone); boneMeshes.push(bone);
+    if (jaw === 'U') {
+      palateMesh = new THREE.Mesh(buildPalate(arch, 10.5), palateMat);
+      group.add(palateMesh);
+    }
+  }
+
+  // 잇몸 또는 치조골: 치열궁을 따라가는 띠. kind = 'gum' | 'bone'
+  function buildRidge(arch, jaw, margin, sMax, kind) {
+    var NS = 150, NR = 22, verts = [], cols = [], idx = [], dirY = jaw === 'U' ? 1 : -1;
+    var gumBase = lin(COLORS.gum), gumRed = lin(0xb4303c), c = new THREE.Color();
+    for (var i = 0; i <= NS; i++) {
+      var s = -sMax + 2 * sMax * i / NS, p = arch.at(s), m = margin(s);
+      var thGum = 4.3 + 2.7 * sstep(0.3, 0.75, Math.abs(s) / sMax), edge, base, th;
+      if (kind === 'gum') { edge = m.y - dirY * (0.8 - m.recess); base = m.y + dirY * 16.7; th = thGum; }
+      else { edge = m.y + dirY * m.loss; base = m.y + dirY * 15.6; th = thGum - 1.25; }
+      var end = Math.min(1, (sMax - Math.abs(s)) / 2.2 + 0.55);
+      var yMid = (edge + base) / 2, yHalf = Math.abs(base - edge) / 2;
+      for (var j = 0; j < NR; j++) {
+        var ph = 2 * Math.PI * j / NR, co = Math.cos(ph), sn = Math.sin(ph);
+        var ex = Math.sign(co) * Math.pow(Math.abs(co), 0.55), ey = Math.sign(sn) * Math.pow(Math.abs(sn), 0.55);
+        var toBase = ey * dirY;                       // -1 = 치아 쪽 가장자리, +1 = 뼈 깊은 쪽
+        var yy = yMid + yHalf * ey * (0.6 + 0.4 * end);
+        var depth = Math.max(0, (yy - m.y) * dirY);
+        var cOff = m.inset + m.tilt * depth;          // 기울어진 뿌리를 따라 안쪽으로 눕는다
+        var flare = 1 + 0.22 * sstep(-0.2, 1, toBase);
+        var taper = kind === 'bone' ? 0.7 + 0.3 * sstep(-1, -0.15, toBase) : 1;
+        var off = th * ex * end * flare * taper;
+        verts.push(p.x + p.nx * (off - cOff), yy, p.z + p.nz * (off - cOff));
+        if (kind === 'gum') c.copy(gumBase).lerp(gumRed, 0.8 * m.red * (1 - sstep(-1, -0.1, toBase)));
+        else c.setRGB(m.cr, m.cg, m.cb);
+        cols.push(c.r, c.g, c.b);
+      }
+    }
+    for (var a = 0; a < NS; a++) for (var b = 0; b < NR; b++) {
+      var i0 = a * NR + b, i1 = a * NR + (b + 1) % NR, i2 = i0 + NR, i3 = i1 + NR;
+      idx.push(i0, i2, i1, i1, i2, i3);
+    }
+    [0, NS].forEach(function (ring) {
+      var cx = 0, cy = 0, cz = 0, o0 = ring * NR * 3;
+      for (var j = 0; j < NR; j++) { var o = (ring * NR + j) * 3; cx += verts[o]; cy += verts[o + 1]; cz += verts[o + 2]; }
+      var ci = verts.length / 3; verts.push(cx / NR, cy / NR, cz / NR);
+      cols.push(cols[o0], cols[o0 + 1], cols[o0 + 2]);
+      for (var k = 0; k < NR; k++) idx.push(ci, ring * NR + k, ring * NR + (k + 1) % NR);
+    });
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+    g.setIndex(idx); g.computeVertexNormals();
+    return g;
+  }
+
+  function buildPalate(arch, yRim) {
+    var ai = arch.a - 5, bi = arch.b - 5, zc = arch.z0 - arch.b, NZ = 44, NX = 26, verts = [], idx = [];
+    var zFront = zc + bi, zBack = zc + 0.5;
+    for (var i = 0; i <= NZ; i++) {
+      var z = zFront + (zBack - zFront) * i / NZ;
+      var r = Math.max(0, 1 - Math.pow(Math.max(0, z - zc) / bi, 2));
+      var xi = ai * Math.sqrt(r);
+      var front = sstep(0, 0.42, (zFront - z) / bi);
+      for (var j = 0; j <= NX; j++) {
+        var f = -1 + 2 * j / NX;
+        verts.push(xi * f, yRim + 12.5 * Math.pow(1 - f * f, 0.55) * front, z);
+      }
+    }
+    for (var a = 0; a < NZ; a++) for (var b = 0; b < NX; b++) {
+      var i0 = a * (NX + 1) + b, i1 = i0 + 1, i2 = i0 + NX + 1, i3 = i2 + 1;
+      idx.push(i0, i2, i1, i1, i2, i3);
+    }
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    g.setIndex(idx); g.computeVertexNormals();
+    return g;
+  }
+
+  buildJaw('U'); buildJaw('L');
+  document.querySelectorAll('[data-bone]').forEach(function (el) {
+    el.style.background = REGIONS[el.getAttribute('data-bone')].lin.clone().convertLinearToSRGB().getStyle();
+  });
+
+  var countSpans = [], countText = [];
+  // 요약 (사랑니 자리는 세지 않음)
+  (function () {
+    var c = { U: { p: 0, m: 0, r: 0 }, L: { p: 0, m: 0, r: 0 } };
+    Object.keys(teeth).forEach(function (k) {
+      var t = teeth[k], j = t.fdi < 30 ? 'U' : 'L';
+      if (t.status === 'present') c[j].p++; else if (t.status === 'missing') c[j].m++; else c[j].r++;
+    });
+    function line(label, o) {
+      var parts = ['치아 ' + o.p + '개'];
+      if (o.r) parts.push('뿌리만 남음 ' + o.r);
+      if (o.m) parts.push('빈 자리 ' + o.m);
+      return label + ' ' + parts.join(' · ');
+    }
+    var el = document.getElementById('count');
+    [line('위턱', c.U), line('아래턱', c.L)].forEach(function (t) { var sp = document.createElement('span'); sp.textContent = t; el.appendChild(sp); countSpans.push(sp); countText.push(t); });
+  })();
+
+  /* ---------- 카메라·조명 ---------- */
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.setClearColor(0x000000, 0);
+  stage.insertBefore(renderer.domElement, stage.firstChild);
+  renderer.domElement.setAttribute('aria-label', '위턱과 아래턱 3D 모형');
+
+  var camera = new THREE.PerspectiveCamera(30, 1, 1, 1200);
+  var TARGET = new THREE.Vector3(0, 0, -23), RADIUS = 50;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8280, 0.6));
+  var head = new THREE.DirectionalLight(0xffffff, 0.7);
+  head.position.set(25, 35, 10); camera.add(head); head.target.position.copy(TARGET); scene.add(head.target);
+  scene.add(camera);
+
+  var controls = null;
+  if (THREE.OrbitControls) {
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.target.copy(TARGET);
+    controls.enableDamping = true; controls.dampingFactor = 0.12;
+    controls.enablePan = false;
+    controls.minDistance = 60; controls.maxDistance = 520;
+    controls.rotateSpeed = 0.8;
+  }
+
+  var VIEWS = {
+    front: { dir: [0, 0.06, 1], upper: true, lower: true },
+    right: { dir: [-1, 0.06, 0.22], upper: true, lower: true },
+    left: { dir: [1, 0.06, 0.22], upper: true, lower: true },
+    upper: { dir: [0, -1, 0.03], upper: true, lower: false },
+    lower: { dir: [0, 1, 0.03], upper: false, lower: true }
+  };
+  function fitDist() {
+    var v = camera.fov * Math.PI / 360, h = Math.atan(Math.tan(v) * camera.aspect);
+    return RADIUS / Math.sin(Math.min(v, h));
+  }
+  var tween = null, reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function goView(name, instant) {
+    var v = VIEWS[name], d = new THREE.Vector3(v.dir[0], v.dir[1], v.dir[2]).normalize();
+    var to = TARGET.clone().addScaledVector(d, fitDist());
+    setToggle('upper', v.upper); setToggle('lower', v.lower);
+    document.querySelectorAll('[data-view]').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.view === name ? 'true' : 'false'); });
+    if (instant || reduce) { camera.position.copy(to); camera.lookAt(TARGET); tween = null; }
+    else tween = { from: camera.position.clone(), to: to, t0: performance.now(), ms: 520 };
+  }
+
+  /* ---------- 표시 전환 ---------- */
+  var show = { upper: true, lower: true, gum: true, bone: true, ghost: true }, mode = 'current';
+  function setToggle(key, on) {
+    show[key] = on;
+    var b = document.querySelector('[data-toggle="' + key + '"]');
+    if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    upperGroup.visible = show.upper; lowerPivot.visible = show.lower;
+    var through = show.gum && (show.bone || mode === 'after');   // 뼈나 임플란트를 볼 때는 잇몸을 비치게 그린다
+    if (gumMat.transparent !== through) { gumMat.transparent = through; gumMat.depthWrite = !through; gumMat.needsUpdate = true; }
+    gumMat.opacity = through ? 0.4 : 1;
+    gumRidges.forEach(function (m) { m.visible = show.gum; });
+    if (palateMesh) palateMesh.visible = show.gum;
+    boneMeshes.forEach(function (m) { m.visible = show.bone; });
+    ghostMeshes.forEach(function (m) { m.visible = show.ghost && !m.userData.planHidden; });
+    applyLegend();
+  }
+  function applyLegend() {
+    document.querySelectorAll('[data-lg]').forEach(function (el) {
+      var k = el.getAttribute('data-lg');
+      var on = k === 'bone' ? show.bone : (k === 'plan' ? mode !== 'current' : (k === 'pre' ? mode !== 'after' : mode === k));
+      el.style.display = on ? '' : 'none';
+    });
+  }
+  /* ---------- 치료 단계: 현재 → 발치 예정 → 치료 후 ---------- */
+  function setMode(next) {
+    var was = mode; mode = next;
+    var after = mode === 'after';
+    Object.keys(teeth).forEach(function (k) {
+      var t = teeth[k], pl = t.plan;
+      if (!t.baseColors) t.baseColors = t.mats.map(function (m) { return m.color.clone(); });
+      var gone = after && pl && (pl.ext || pl.pontic), recrown = after && pl && (pl.ext || pl.pontic || pl.crown);
+      t.rootMeshes.forEach(function (m) { m.visible = !gone; });
+      t.crownMeshes.forEach(function (m) { m.visible = !recrown; });
+      t.planMeshes.forEach(function (m) { m.visible = after; });
+      if (t.ghost) t.ghost.userData.planHidden = after && !!pl;
+      var red = mode === 'extract' && pl && pl.ext;
+      t.mats.forEach(function (m, i) { m.color.copy(red ? EXT_COLOR : t.baseColors[i]); });
+    });
+    document.querySelectorAll('[data-mode]').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.mode === mode ? 'true' : 'false'); });
+    if (countSpans.length > 1) {
+      var n = { i: 0, p: 0, c: 0 };
+      Object.keys(PLAN).forEach(function (k) { var pl = PLAN[k]; if (pl.implant) n.i++; if (pl.pontic) n.p++; if (pl.crown) n.c++; });
+      countSpans[1].textContent = after ? '아래턱(계획) 임플란트 ' + n.i + ' · 가짜 치아 ' + n.p + ' · 크라운 ' + n.c : countText[1];
+    }
+    if (after) setToggle('bone', false); else if (was === 'after') setToggle('bone', true); else setToggle('bone', show.bone);
+    select(null);
+    infoText.textContent = mode === 'extract' ? '붉게 표시한 치아가 계획서에서 발치 예정인 치아입니다.' :
+      (after ? '계획서대로 치료한 뒤의 모습입니다. 치아를 누르면 무엇이 들어가는지 나옵니다.' : '치아나 뼈를 누르면 상태가 나옵니다. 한 손가락으로 돌리고 두 손가락으로 확대합니다.');
+  }
+  document.querySelectorAll('[data-mode]').forEach(function (b) {
+    b.addEventListener('click', function () { setMode(b.dataset.mode); });
+  });
+  document.querySelectorAll('[data-toggle]').forEach(function (b) {
+    b.addEventListener('click', function () { setToggle(b.dataset.toggle, !show[b.dataset.toggle]); });
+  });
+  document.querySelectorAll('[data-view]').forEach(function (b) {
+    b.addEventListener('click', function () { goView(b.dataset.view, false); });
+  });
+  var openEl = document.getElementById('open');
+  function setOpen() { lowerPivot.rotation.x = Number(openEl.value) * Math.PI / 180; }
+  openEl.addEventListener('input', setOpen); setOpen();
+
+  /* ---------- 치아 선택 ---------- */
+  var selected = null, infoText = document.getElementById('infoText');
+  function select(info) {
+    if (selected) selected.mats.concat(selected.planMats).forEach(function (m) { m.emissive.setHex(0x000000); });
+    selected = info;
+    if (!info) return;
+    if (info.regionOnly) { selected = null; showRegion(info.regionOnly); return; }
+    info.mats.concat(info.planMats).forEach(function (m) { m.emissive.copy(lin(0x0f8f82)); m.emissiveIntensity = 0.6; });
+    infoText.textContent = '';
+    var b = document.createElement('b'); b.textContent = info.fdi + '번';
+    infoText.appendChild(b);
+    var pt = planText(info), text;
+    if (mode === 'after' && pt) text = ' ' + info.name + ' · ' + pt;
+    else {
+      text = ' ' + info.name + ' · ' + STATUS_TEXT[info.status];
+      if (info.deposit) text += ' · 잇몸 경계에 침착물이 보입니다';
+      if (pt) text += ' · ' + pt;
+    }
+    infoText.appendChild(document.createTextNode(text));
+  }
+  function planText(info) {
+    var pl = info.plan; if (!pl) return null;
+    if (mode === 'extract') return pl.ext ? '계획서에서 발치 예정입니다' : null;
+    if (mode !== 'after') return null;
+    if (pl.implant) {
+      var t = '발치 후 임플란트와 보철';
+      if (pl.graft) t += pl.graft === 'complex' ? ' · 복잡 뼈 이식' : ' · 단순 뼈 이식';
+      if (pl.bridge) t += ' · 앞니 4자리 가짜 치아를 받치는 기둥';
+      return t;
+    }
+    if (pl.pontic) return '가짜 치아(폰틱) · 양쪽 송곳니 자리 임플란트에 연결';
+    return '자연치를 남기고 지르코니아 크라운';
+  }
+  function showRegion(n) {
+    var R = REGIONS[n];
+    infoText.textContent = '';
+    var b = document.createElement('b'); b.textContent = R.name;
+    infoText.appendChild(b);
+    infoText.appendChild(document.createTextNode(' · 뼈: ' + R.bone + ' · 잇몸: ' + R.gum));
+  }
+  function nearestRegion(jaw, worldPoint) {
+    var grp = jaw === 'U' ? upperGroup : lowerGroup, pt = grp.worldToLocal(worldPoint.clone()), best = null, bd = 1e9;
+    Object.keys(teeth).forEach(function (k) {
+      var t = teeth[k]; if (t.jaw !== jaw) return;
+      var d = Math.hypot(t.pos.x - pt.x, t.pos.z - pt.z);
+      if (d < bd) { bd = d; best = t; }
+    });
+    return best ? best.region : null;
+  }
+  var ray = new THREE.Raycaster(), down = null;
+  renderer.domElement.addEventListener('pointerdown', function (e) { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+  renderer.domElement.addEventListener('pointerup', function (e) {
+    if (!down) return;
+    var moved = Math.hypot(e.clientX - down.x, e.clientY - down.y), dt = performance.now() - down.t; down = null;
+    if (moved > 8 || dt > 600) return;
+    var r = renderer.domElement.getBoundingClientRect();
+    var ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    var list = pickables.concat(boneMeshes);
+    if (!(show.gum && show.bone)) list = list.concat(gumRidges);
+    if (palateMesh) list.push(palateMesh);
+    var hits = ray.intersectObjects(list, false), hit = null, hitPoint = null;
+    for (var i = 0; i < hits.length; i++) {
+      var o = hits[i].object, vis = true;
+      for (var q = o; q; q = q.parent) if (!q.visible) { vis = false; break; }
+      if (!vis) continue;
+      hit = o; hitPoint = hits[i].point; break;
+    }
+    if (hit && hit.userData.tooth) select(hit.userData.tooth);
+    else if (hit && hit.userData.ridge) { var rg = nearestRegion(hit.userData.ridge, hitPoint); if (rg) select({ regionOnly: rg }); }
+  });
+
+  /* ---------- 크기·그리기 ---------- */
+  function resize() {
+    var w = stage.clientWidth, h = stage.clientHeight;
+    if (!w || !h) return;
+    var d = camera.position.distanceTo(TARGET), old = fitDist();
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+    if (d > 0 && old > 0 && !tween) {
+      var k = fitDist() / old;
+      camera.position.sub(TARGET).multiplyScalar(k).add(TARGET);
+    }
+  }
+  camera.aspect = Math.max(0.2, stage.clientWidth / Math.max(1, stage.clientHeight));
+  camera.updateProjectionMatrix();
+  goView('front', true);
+  setMode('current');
+  resize();
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(stage); else window.addEventListener('resize', resize);
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (document.hidden) return;
+    if (tween) {
+      var f = Math.min(1, (now - tween.t0) / tween.ms), e = f * f * (3 - 2 * f);
+      var a = tween.from.clone().sub(TARGET), b = tween.to.clone().sub(TARGET);
+      var la = a.length(), lb = b.length();
+      var dir = a.normalize().lerp(b.normalize(), e);
+      if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+      camera.position.copy(TARGET).addScaledVector(dir.normalize(), la + (lb - la) * e);
+      if (f >= 1) tween = null;
+    }
+    if (controls) controls.update(); else camera.lookAt(TARGET);
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
