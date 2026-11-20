@@ -160,21 +160,22 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     <span data-lg="bone"><i data-bone="4"></i>남아 있음</span>
     <span data-lg="bone"><i data-bone="2"></i>판독 어려움</span>
     <span class="brk" data-lg="plan"></span>
-    <span data-lg="extract"><i style="background:#d9534a"></i>발치 예정</span>
-    <span data-lg="after"><i style="background:#aab3bd"></i>임플란트</span>
-    <span data-lg="after"><i style="background:#f3f0e6"></i>임플란트 보철</span>
-    <span data-lg="after"><i style="background:#c9dcee"></i>가짜 치아</span>
-    <span data-lg="after"><i style="background:#e6d9f0"></i>지르코니아 크라운</span>
-    <span data-lg="after"><i style="background:#7fc8b4"></i>뼈 이식</span>
+    <span data-lg="extract"><i style="background:#d9534a"></i>발치한 치아</span>
+    <span data-lg="post"><i style="background:#aab3bd"></i>임플란트</span>
+    <span data-lg="final"><i style="background:#f3f0e6"></i>임플란트 보철</span>
+    <span data-lg="final"><i style="background:#c9dcee"></i>가짜 치아</span>
+    <span data-lg="final"><i style="background:#e6d9f0"></i>지르코니아 크라운</span>
+    <span data-lg="post"><i style="background:#7fc8b4"></i>뼈 이식</span>
   </div>
 </div>
 
 <div class="panel">
   <div class="row" role="group" aria-label="치료 단계">
     <span class="lab">단계</span>
-    <button type="button" id="m-current" data-mode="current" aria-pressed="true">현재</button>
-    <button type="button" id="m-extract" data-mode="extract" aria-pressed="false">발치 예정</button>
-    <button type="button" id="m-after" data-mode="after" aria-pressed="false">치료 후</button>
+    <button type="button" id="m-current" data-mode="current" aria-pressed="true">치료 전</button>
+    <button type="button" id="m-extract" data-mode="extract" aria-pressed="false">발치</button>
+    <button type="button" id="m-surgery" data-mode="surgery" aria-pressed="false">수술 후</button>
+    <button type="button" id="m-final" data-mode="final" aria-pressed="false">보철 후</button>
   </div>
   <div class="row" role="group" aria-label="보는 방향">
     <span class="lab">방향</span>
@@ -196,7 +197,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     <label class="lab" for="open">벌림</label>
     <div class="slider"><input type="range" id="open" min="0" max="26" step="1" value="5"></div>
   </div>
-  <p class="note">설명용 모형이며 진단 자료가 아닙니다. 치료 단계는 2026년 11월 13일 견적서(양쪽 송곳니 발치안)의 표기를 읽어 옮겼고, 송곳니 발치 여부는 아직 정해지지 않았습니다. 뼈 높이는 단계값이고 치아와 임플란트 모양은 표준형입니다. 좌우는 본인 기준입니다.</p>
+  <p class="note">설명용 모형이며 진단 자료가 아닙니다. 치료 단계는 2026년 11월 13일 견적서에서 왼쪽 큰어금니 발치와 임플란트만 뺀 수정 계획을 옮긴 것입니다. 송곳니 자리 임플란트 2개는 아직 심지 않은 것으로 보고 보철 후 단계에만 넣었습니다. 뼈 높이는 단계값이고 치아와 임플란트 모양은 표준형입니다. 좌우는 본인 기준입니다.</p>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -221,13 +222,13 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
   // FDI 번호. 표시가 없는 번호는 사진에서 치아가 보이는 자리.
   var STATUS = { 27: 'missing', 37: 'missing', 42: 'missing', 45: 'stump', 46: 'root', 47: 'root' };
   var DEPOSIT = { 43: 1, 41: 1, 31: 1, 32: 1, 33: 1 };
-  // 2026-11-13 견적서(아래턱, 양쪽 송곳니 발치안)의 치식 표기를 옮긴 것
+  // 2026-11-13 견적서(양쪽 송곳니 발치안)에서 왼쪽 큰어금니(36) 발치와 임플란트만 뺀 수정 계획.
+  // placed: 이미 심은 임플란트(오른쪽 어금니 자리 3개). 송곳니 자리 2개는 아직 심지 않은 것으로 본다.
   var PLAN = {
-    47: { ext: 1, implant: 1 }, 46: { ext: 1, implant: 1, graft: 'simple' }, 45: { ext: 1, implant: 1, graft: 'simple' },
+    47: { ext: 1, implant: 1, placed: 1 }, 46: { ext: 1, implant: 1, placed: 1, graft: 'simple' }, 45: { ext: 1, implant: 1, placed: 1, graft: 'simple' },
     44: { crown: 1 }, 43: { ext: 1, implant: 1, graft: 'complex', bridge: 1 },
     42: { pontic: 1 }, 41: { ext: 1, pontic: 1 }, 31: { ext: 1, pontic: 1 }, 32: { ext: 1, pontic: 1 },
-    33: { ext: 1, implant: 1, graft: 'complex', bridge: 1 }, 34: { crown: 1 }, 35: { crown: 1 },
-    36: { ext: 1, implant: 1, graft: 'simple' }
+    33: { ext: 1, implant: 1, graft: 'complex', bridge: 1 }, 34: { crown: 1 }, 35: { crown: 1 }
   };
   var PLAN_COLORS = { implantCrown: 0xf3f0e6, pontic: 0xc9dcee, zirconia: 0xe6d9f0, extract: 0xd9534a, fixture: 0xaab3bd, graftSimple: 0x7fc8b4, graftComplex: 0x3f9f8a };
   var ADJ = { 22: { inset: 0.9, rot: 8 }, 23: { inset: -0.6 }, 13: { inset: -0.4 } };
@@ -439,24 +440,28 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     });
   }
 
+  // when: 'post' = 수술 후와 보철 후 모두, 'surgery' = 수술 후만, 'final' = 보철 후만
   function addPlan(parent, jaw, i, sp, info, crownGeo, st) {
     var pl = info.plan; if (!pl) return;
     var lift = st === 'present' ? 0 : 1.3;      // 낮춰 둔 자리는 보철 높이를 이웃과 맞춘다
-    function add(mesh) { mesh.visible = false; mesh.userData.tooth = info; parent.add(mesh); pickables.push(mesh); info.planMeshes.push(mesh); return mesh; }
+    function add(mesh, when) { mesh.visible = false; mesh.userData.tooth = info; mesh.userData.when = when; parent.add(mesh); pickables.push(mesh); info.planMeshes.push(mesh); return mesh; }
     if (pl.implant) {
       var molar = sp.k === 'mo', r = molar ? 2.3 : 1.9, len = molar ? 10 : 11.5;
-      var fx = add(new THREE.Mesh(cached('fix' + (molar ? 'M' : 'A'), function () { return fixtureGeo(r, len); }), implantMat));
+      var fx = add(new THREE.Mesh(cached('fix' + (molar ? 'M' : 'A'), function () { return fixtureGeo(r, len); }), implantMat), pl.placed ? 'post' : 'final');
       fx.position.y = lift - 1.5;
-      if (pl.graft) {
-        var k = pl.graft === 'complex' ? 1.25 : 1;
-        var gr = add(new THREE.Mesh(graftGeo, pl.graft === 'complex' ? graftComplexMat : graftSimpleMat));
-        gr.scale.set(sp.w * 0.5 * k, 2.4 * k, sp.d * 0.5 * k); gr.position.y = lift - 4.2;
+      if (pl.placed) {
+        var cap = add(new THREE.Mesh(cached('cap' + (molar ? 'M' : 'A'), function () { return new THREE.CylinderGeometry(r, r * 0.82, 2.6, 20); }), implantMat), 'surgery');
+        cap.position.y = lift + 0.9;
       }
+    }
+    if (pl.graft) {
+      var k = pl.graft === 'complex' ? 1.25 : 1;
+      var gr = add(new THREE.Mesh(graftGeo, pl.graft === 'complex' ? graftComplexMat : graftSimpleMat), 'post');
+      gr.scale.set(sp.w * 0.5 * k, 2.4 * k, sp.d * 0.5 * k); gr.position.y = lift - 4.2;
     }
     var pm = mat(pl.crown ? PLAN_COLORS.zirconia : (pl.pontic ? PLAN_COLORS.pontic : PLAN_COLORS.implantCrown), 0.22);
     info.planMats.push(pm);
-    var pc = add(new THREE.Mesh(crownGeo, pm));
-    pc.position.y = lift + (pl.pontic ? 0.4 : 0);
+    add(new THREE.Mesh(crownGeo, pm), 'final').position.y = lift + (pl.pontic ? 0.4 : 0);
   }
 
   function buildJaw(jaw) {
@@ -684,7 +689,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     var b = document.querySelector('[data-toggle="' + key + '"]');
     if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false');
     upperGroup.visible = show.upper; lowerPivot.visible = show.lower;
-    var through = show.gum && (show.bone || mode === 'after');   // 뼈나 임플란트를 볼 때는 잇몸을 비치게 그린다
+    var through = show.gum && (show.bone || mode === 'surgery' || mode === 'final');   // 뼈나 임플란트를 볼 때는 잇몸을 비치게 그린다
     if (gumMat.transparent !== through) { gumMat.transparent = through; gumMat.depthWrite = !through; gumMat.needsUpdate = true; }
     gumMat.opacity = through ? 0.4 : 1;
     gumRidges.forEach(function (m) { m.visible = show.gum; });
@@ -696,35 +701,42 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
   function applyLegend() {
     document.querySelectorAll('[data-lg]').forEach(function (el) {
       var k = el.getAttribute('data-lg');
-      var on = k === 'bone' ? show.bone : (k === 'plan' ? mode !== 'current' : (k === 'pre' ? mode !== 'after' : mode === k));
+      var post = mode === 'surgery' || mode === 'final';
+      var on = k === 'bone' ? show.bone : (k === 'plan' ? mode !== 'current' : (k === 'pre' ? !post : (k === 'post' ? post : mode === k)));
       el.style.display = on ? '' : 'none';
     });
   }
-  /* ---------- 치료 단계: 현재 → 발치 예정 → 치료 후 ---------- */
+  /* ---------- 치료 단계: 치료 전 → 발치 → 수술 후 → 보철 후 ---------- */
   function setMode(next) {
-    var was = mode; mode = next;
-    var after = mode === 'after';
+    var wasPost = mode === 'surgery' || mode === 'final'; mode = next;
+    var surgery = mode === 'surgery', fin = mode === 'final', post = surgery || fin;
     Object.keys(teeth).forEach(function (k) {
       var t = teeth[k], pl = t.plan;
       if (!t.baseColors) t.baseColors = t.mats.map(function (m) { return m.color.clone(); });
-      var gone = after && pl && (pl.ext || pl.pontic), recrown = after && pl && (pl.ext || pl.pontic || pl.crown);
+      var gone = post && pl && (pl.ext || pl.pontic), recrown = gone || (fin && pl && pl.crown);
       t.rootMeshes.forEach(function (m) { m.visible = !gone; });
       t.crownMeshes.forEach(function (m) { m.visible = !recrown; });
-      t.planMeshes.forEach(function (m) { m.visible = after; });
-      if (t.ghost) t.ghost.userData.planHidden = after && !!pl;
+      t.planMeshes.forEach(function (m) {
+        var w = m.userData.when;
+        m.visible = post && (w === 'post' || (w === 'surgery' && surgery) || (w === 'final' && fin));
+      });
+      if (t.ghost) t.ghost.userData.planHidden = post && !!pl;
       var red = mode === 'extract' && pl && pl.ext;
       t.mats.forEach(function (m, i) { m.color.copy(red ? EXT_COLOR : t.baseColors[i]); });
     });
     document.querySelectorAll('[data-mode]').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.mode === mode ? 'true' : 'false'); });
     if (countSpans.length > 1) {
-      var n = { i: 0, p: 0, c: 0 };
-      Object.keys(PLAN).forEach(function (k) { var pl = PLAN[k]; if (pl.implant) n.i++; if (pl.pontic) n.p++; if (pl.crown) n.c++; });
-      countSpans[1].textContent = after ? '아래턱(계획) 임플란트 ' + n.i + ' · 가짜 치아 ' + n.p + ' · 크라운 ' + n.c : countText[1];
+      var n = { i: 0, d: 0, p: 0, c: 0, e: 0 };
+      Object.keys(PLAN).forEach(function (k) { var pl = PLAN[k]; if (pl.implant) n.i++; if (pl.placed) n.d++; if (pl.pontic) n.p++; if (pl.crown) n.c++; if (pl.ext) n.e++; });
+      countSpans[1].textContent = surgery ? '아래턱(수술 후) 임플란트 ' + n.d + ' · 발치한 자리 ' + n.e :
+        (fin ? '아래턱(계획) 임플란트 ' + n.i + ' · 가짜 치아 ' + n.p + ' · 크라운 ' + n.c : countText[1]);
     }
-    if (after) setToggle('bone', false); else if (was === 'after') setToggle('bone', true); else setToggle('bone', show.bone);
+    if (post && !wasPost) setToggle('bone', false); else if (!post && wasPost) setToggle('bone', true); else setToggle('bone', show.bone);
     select(null);
-    infoText.textContent = mode === 'extract' ? '붉게 표시한 치아가 계획서에서 발치 예정인 치아입니다.' :
-      (after ? '계획서대로 치료한 뒤의 모습입니다. 치아를 누르면 무엇이 들어가는지 나옵니다.' : '치아나 뼈를 누르면 상태가 나옵니다. 한 손가락으로 돌리고 두 손가락으로 확대합니다.');
+    infoText.textContent = mode === 'extract' ? '붉게 표시한 8개가 발치한 치아입니다.' :
+      (surgery ? '발치, 뼈 이식, 오른쪽 임플란트 3개 식립까지 마친 모습입니다.' :
+      (fin ? '남은 계획(송곳니 자리 임플란트 2개, 앞니 브릿지, 작은어금니 크라운)까지 마친 모습입니다.' :
+      '치아나 뼈를 누르면 상태가 나옵니다. 한 손가락으로 돌리고 두 손가락으로 확대합니다.'));
   }
   document.querySelectorAll('[data-mode]').forEach(function (b) {
     b.addEventListener('click', function () { setMode(b.dataset.mode); });
@@ -751,7 +763,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     var b = document.createElement('b'); b.textContent = info.fdi + '번';
     infoText.appendChild(b);
     var pt = planText(info), text;
-    if (mode === 'after' && pt) text = ' ' + info.name + ' · ' + pt;
+    if ((mode === 'surgery' || mode === 'final') && pt) text = ' ' + info.name + ' · ' + pt;
     else {
       text = ' ' + info.name + ' · ' + STATUS_TEXT[info.status];
       if (info.deposit) text += ' · 잇몸 경계에 침착물이 보입니다';
@@ -761,16 +773,16 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
   }
   function planText(info) {
     var pl = info.plan; if (!pl) return null;
-    if (mode === 'extract') return pl.ext ? '계획서에서 발치 예정입니다' : null;
-    if (mode !== 'after') return null;
+    if (mode === 'extract') return pl.ext ? '발치한 치아입니다' : null;
+    var fin = mode === 'final';
+    if (mode !== 'surgery' && !fin) return null;
+    var g = pl.graft ? (pl.graft === 'complex' ? ' · 복잡 뼈 이식' : ' · 단순 뼈 이식') : '';
     if (pl.implant) {
-      var t = '발치 후 임플란트와 보철';
-      if (pl.graft) t += pl.graft === 'complex' ? ' · 복잡 뼈 이식' : ' · 단순 뼈 이식';
-      if (pl.bridge) t += ' · 앞니 4자리 가짜 치아를 받치는 기둥';
-      return t;
+      if (fin) return '발치 후 임플란트와 보철' + g + (pl.bridge ? ' · 앞니 4자리 가짜 치아를 받치는 기둥' : '');
+      return pl.placed ? '발치 후 임플란트 식립, 보철 전' + g : '발치한 자리' + g + ' · 임플란트는 다음 단계';
     }
-    if (pl.pontic) return '가짜 치아(폰틱) · 양쪽 송곳니 자리 임플란트에 연결';
-    return '자연치를 남기고 지르코니아 크라운';
+    if (pl.pontic) return fin ? '가짜 치아(폰틱) · 양쪽 송곳니 자리 임플란트에 연결' : (pl.ext ? '발치한 자리 · 나중에 가짜 치아가 들어갈 곳' : '원래 비어 있던 자리 · 나중에 가짜 치아가 들어갈 곳');
+    return fin ? '자연치를 남기고 지르코니아 크라운' : null;
   }
   function showRegion(n) {
     var R = REGIONS[n];
