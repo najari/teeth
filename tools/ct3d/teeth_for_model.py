@@ -12,6 +12,9 @@
 
 --remap은 분할 모델이 붙인 번호를 모형의 번호로 바꿀 때 쓴다(예: 42:41).
 
+find_remnants.py에서 번호를 붙인 뿌리 조각도 같은 형식으로 담고 remnant 표시를 붙인다.
+뿌리 조각은 위쪽 일부를 잇몸 위로 나온 부분(crown)으로, 나머지를 뿌리(root)로 나눈다.
+
 출력 파일에는 환자의 CT에서 뽑은 치아 모양이 들어 있다. 공개할지는 따로 정한다.
 """
 import argparse
@@ -24,7 +27,7 @@ import numpy as np
 import pyvista as pv
 import SimpleITK as sitk
 
-from labels_to_mesh import label_to_surface
+from labels_to_mesh import REMNANT_HU, hu_surface, label_to_surface
 
 UNIT_MM = 0.01          # 좌표를 0.01mm 단위 정수로 담는다
 MIN_VOLUME_MM3 = 100    # 이보다 작으면 조각으로 보고 뺀다
@@ -102,6 +105,35 @@ def main() -> None:
             "hu": ct_arr[z:z + sz, y:y + sy, x:x + sx][sub], "volume": volume, "from": int(m.group(1)),
         }
 
+    # 1-2) 뿌리만 남은 치아 (find_remnants.py에서 번호를 붙인 것만).
+    #       짧고 뭉툭해서 긴 축을 모양으로 잡을 수 없다. 같은 턱에서 가장 가까운 치아 둘의 축을 빌린다.
+    remnant_path = args.seg_dir / "remnant_labels.nii.gz"
+    if remnant_path.exists():
+        remnants = sitk.ReadImage(str(remnant_path), sitk.sitkUInt8)
+        rem_arr = sitk.GetArrayViewFromImage(remnants)
+        rem_stats = sitk.LabelShapeStatisticsImageFilter()
+        rem_stats.Execute(remnants)
+        whole_teeth = dict(teeth)
+        for cand in json.loads((args.seg_dir / "remnants_info.json").read_text(encoding="utf-8"))["candidates"]:
+            fdi = cand["fdi"]
+            if not fdi:
+                continue
+            if fdi in teeth:
+                print(f"{fdi}번: 자동 분할한 치아가 이미 있어 뿌리 조각 {cand['id']}번을 쓰지 않음")
+                continue
+            x, y, z, sx, sy, sz = rem_stats.GetBoundingBox(cand["id"])
+            sub = rem_arr[z:z + sz, y:y + sy, x:x + sx] == cand["id"]
+            zz, yy, xx = np.nonzero(sub)
+            pts = lps_to_three(np.column_stack([xx + x, yy + y, zz + z]) * spacing + origin)
+            centroid = pts.mean(axis=0)
+            same_jaw = sorted((f for f in whole_teeth if (f < 30) == (fdi < 30)),
+                              key=lambda f: np.linalg.norm(whole_teeth[f]["c"] - centroid))[:2]
+            axis = np.mean([whole_teeth[f]["y"] for f in same_jaw], axis=0)
+            teeth[fdi] = {
+                "label": cand["id"], "bbox": (x, y, z, sx, sy, sz), "pts": pts, "c": centroid,
+                "y": axis / np.linalg.norm(axis), "hu": None, "volume": cand["volume_mm3"], "from": fdi, "remnant": remnants,
+            }
+
     # 2) 치열궁의 바깥 방향: 이웃 치아의 중심을 이은 선에 수직이고, 치열 중심에서 멀어지는 쪽.
     for order in (UPPER, LOWER):
         seq = [f for f in order if f in teeth]
@@ -126,23 +158,33 @@ def main() -> None:
         t = teeth[fdi]
         frame = np.column_stack([t["x"], t["y"], t["z"]])      # 열이 자기 좌표의 축
         local = (t["pts"] - t["c"]) @ frame
-        surf = label_to_surface(labels, t["label"], t["bbox"], args.tris, 0.5)
+        is_remnant = "remnant" in t
+        if is_remnant:
+            surf = hu_surface(ct, t["remnant"], t["label"], t["bbox"], REMNANT_HU, args.tris)
+        else:
+            surf = label_to_surface(labels, t["label"], t["bbox"], args.tris, 0.5)
         verts = (lps_to_three(np.asarray(surf.points)) - t["c"]) @ frame
         tip, apex = verts[:, 1].max(), verts[:, 1].min()
         length = tip - apex
 
-        # 법랑질이 끝나는 높이를 치아 목으로 본다. 법랑질이 거의 없으면 표준 비율(길이의 42%)을 쓴다.
-        enamel_y = local[t["hu"] > args.enamel, 1]
-        if len(enamel_y) >= 200:
-            crown_h, basis = tip - np.percentile(enamel_y, 5), "법랑질"
+        if is_remnant:
+            # 머리가 없으므로 치아 목을 정할 근거가 없다. 위쪽 35%(1.5~3mm)를 잇몸 위로 나온 부분으로 본다.
+            clamped, basis = float(np.clip(0.35 * length, 1.5, 3.0)), "뿌리 조각"
+            neck = tip - clamped
+            offset = np.array([local[:, 0].mean(), neck, local[:, 2].mean()])
         else:
-            crown_h, basis = 0.42 * length, "표준 비율"
-        clamped = float(np.clip(crown_h, 0.30 * length, 0.55 * length))
-        if clamped != crown_h:
-            basis += "(범위 제한)"
-        neck = tip - clamped
-        ring = local[np.abs(local[:, 1] - neck) < 0.6]
-        offset = np.array([ring[:, 0].mean(), neck, ring[:, 2].mean()])
+            # 법랑질이 끝나는 높이를 치아 목으로 본다. 법랑질이 거의 없으면 표준 비율(길이의 42%)을 쓴다.
+            enamel_y = local[t["hu"] > args.enamel, 1]
+            if len(enamel_y) >= 200:
+                crown_h, basis = tip - np.percentile(enamel_y, 5), "법랑질"
+            else:
+                crown_h, basis = 0.42 * length, "표준 비율"
+            clamped = float(np.clip(crown_h, 0.30 * length, 0.55 * length))
+            if clamped != crown_h:
+                basis += "(범위 제한)"
+            neck = tip - clamped
+            ring = local[np.abs(local[:, 1] - neck) < 0.6]
+            offset = np.array([ring[:, 0].mean(), neck, ring[:, 2].mean()])
 
         faces = surf.faces.reshape(-1, 4)[:, 1:]
         v = verts - offset
@@ -152,22 +194,26 @@ def main() -> None:
         whole = pv.PolyData(v, np.column_stack([np.full(len(faces), 3), faces]).ravel())
         crown = to_part(whole.clip(normal=(0, 1, 0), origin=(0, 0, 0), invert=False))
         root = to_part(whole.clip(normal=(0, 1, 0), origin=(0, 0, 0), invert=True))
-        w = float(crown["v"][:, 0].max() - crown["v"][:, 0].min())
-        d = float(crown["v"][:, 2].max() - crown["v"][:, 2].min())
+        widest = v if is_remnant else crown["v"]      # 뿌리 조각은 전체 폭을, 치아는 머리 폭을 자리 폭으로 쓴다
+        w = float(widest[:, 0].max() - widest[:, 0].min())
+        d = float(widest[:, 2].max() - widest[:, 2].min())
         out[str(fdi)] = {
             "w": round(w, 2), "d": round(d, 2), "h": round(clamped, 2), "root": round(float(length - clamped), 2),
             "crown": pack(crown), "rootMesh": pack(root),
         }
+        if is_remnant:
+            out[str(fdi)]["remnant"] = True
         note = f"  (분할 번호 {t['from']})" if t["from"] != fdi else ""
         print(f"{fdi:3d} {w:6.1f} {d:6.1f} {clamped:7.1f} {length - clamped:8.1f}   {basis:14s} {len(crown['f'])}+{len(root['f'])}{note}")
 
+    n_remnants = sum(1 for t in out.values() if t.get("remnant"))
     data = {"unit": UNIT_MM, "teeth": out}
     header = (
         "// CT에서 뽑은 치아별 실제 모양. tools/ct3d/teeth_for_model.py가 만든 파일이라 직접 고치지 않는다.\n"
         "// 치아마다 자기 좌표(원점: 치아 목, +y: 머리 쪽, +z: 볼·입술 쪽)이고 좌표 단위는 unit(mm)이다.\n"
     )
     args.out_js.write_text(header + "window.CT_TEETH = " + json.dumps(data, separators=(",", ":")) + ";\n", encoding="utf-8")
-    print(f"\n치아 {len(out)}개, 저장: {args.out_js} ({args.out_js.stat().st_size / 1e6:.2f} MB)")
+    print(f"\n치아 {len(out) - n_remnants}개, 뿌리만 남은 치아 {n_remnants}개, 저장: {args.out_js} ({args.out_js.stat().st_size / 1e6:.2f} MB)")
 
 
 if __name__ == "__main__":

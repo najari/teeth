@@ -175,6 +175,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     teeth:   { label: '치아',     color: 0xf7f3e6 },
     jaw:     { label: '턱뼈',     color: 0xb9a57a, soft: true },
     tooth:   { label: '치아',     color: 0xf7f3e6 },
+    remnant: { label: '뿌리만 남음', color: 0x8a6a45 },
     pulp:    { label: '치수',     color: 0xd95a54 },
     canal:   { label: '신경관',   color: 0xf2bf33 },
     implant: { label: '임플란트', color: 0xaab3bd },
@@ -186,6 +187,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
   function kindOf(name) {
     if (name === 'bone' || name === 'teeth') return name;
     var m = /fdi(\d+)$/.exec(name);
+    if (/^remnant/.test(name)) return 'remnant';
     if (/pulp/.test(name)) return 'pulp';
     if (/canal/.test(name)) return 'canal';
     if (m && +m[1] >= 11 && +m[1] <= 48) return 'tooth';
@@ -208,10 +210,13 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
   };
   function labelOf(name, kind) {
     var m = /fdi(\d+)$/.exec(name);
-    if ((kind === 'tooth' || kind === 'pulp') && m) {
+    if ((kind === 'tooth' || kind === 'pulp' || kind === 'remnant') && m) {
       var n = +m[1] % 100;
-      return QUAD[Math.floor(n / 10)] + ' ' + TOOTH[n % 10 - 1] + (kind === 'pulp' ? '의 치수' : '') + ' (' + n + '번)';
+      return QUAD[Math.floor(n / 10)] + ' ' + TOOTH[n % 10 - 1] + (kind === 'pulp' ? '의 치수' : '') +
+        ' (' + n + '번' + (kind === 'remnant' ? ', 뿌리만 남음' : '') + ')';
     }
+    var frag = /^fragment_(\d+)$/.exec(name);
+    if (frag) return '치아 번호를 붙이지 않은 조각 ' + frag[1];
     return FIXED[name] || name;
   }
 

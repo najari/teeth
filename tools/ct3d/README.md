@@ -31,10 +31,13 @@ TotalSegmentator의 `teeth` 작업으로 치아를 번호별로 나눕니다. �
 |---|---|---|
 | 1 | `python setup_segmentation.py` | 저장소 옆 `.venv-seg`에 PyTorch와 TotalSegmentator 설치 |
 | 2 | `<.venv-seg의 python> segment_teeth.py <ct.nii.gz> <분할 폴더>` | `teeth_labels.nii.gz`, `segmentation_info.json` |
-| 3 | `python labels_to_mesh.py <분할 폴더> <ct.nii.gz> <출력 폴더>` | `teeth_parts.glb`(구조마다 메시 하나), `parts_info.json` |
-| 4 | `python build_viewer.py <출력 폴더>/teeth_parts.glb <출력 폴더>/teeth_viewer.html <출력 폴더>/parts_info.json` | 치아를 누르면 이름이 나오는 뷰어 |
+| 3 | `python find_remnants.py <분할 폴더> <ct.nii.gz> [--assign 1:47 2:46 ...]` | 자동 분할이 놓친 뿌리 조각 후보와 미리보기 그림 |
+| 4 | `python labels_to_mesh.py <분할 폴더> <ct.nii.gz> <출력 폴더>` | `teeth_parts.glb`(구조마다 메시 하나), `parts_info.json` |
+| 5 | `python build_viewer.py <출력 폴더>/teeth_parts.glb <출력 폴더>/teeth_viewer.html <출력 폴더>/parts_info.json` | 치아를 누르면 이름이 나오는 뷰어 |
 
-- 2번은 CPU로 약 7분 걸렸고 RAM을 9GB쯤 썼습니다. 3번과 4번은 1절의 가상환경으로 실행합니다.
+- 2번은 CPU로 약 7분 걸렸고 RAM을 9GB쯤 썼습니다. 3~5번은 1절의 가상환경으로 실행합니다.
+- 3번은 뼈와 치아에 붙어 있지 않은 작고 밝은 덩어리를 후보로 찾습니다. 몇 번 치아인지는 미리보기 그림(`remnants_preview.png`)을 보고 `--assign`으로 붙여 다시 실행합니다. 번호를 붙이지 않은 후보는 "기타"로 들어갑니다. 3번을 건너뛰어도 4번은 돌아갑니다.
+- 4번은 턱뼈를 CT 밝기로 따로 뽑아 턱 전체를 보여 줍니다. 분할 모델의 턱뼈(치아 둘레만 상자 모양으로 나옴)를 쓰려면 `--ai-jaws`를 붙입니다.
 - `setup_segmentation.py`는 NVIDIA GPU가 있으면 CUDA용 PyTorch를 설치합니다. GPU에서 돌리는 경로는 아직 실행해 보지 않았습니다.
 - `run_on_gpu_pc.bat`은 1번과 2번을 다른 PC에서 한 번에 실행하는 파일입니다. `setup_segmentation.py`, `segment_teeth.py`, `ct.nii.gz`와 같은 폴더에 두고 실행합니다.
 - 계산은 모두 PC 안에서 합니다. 처음 실행할 때 모델 가중치 세 개(합쳐서 약 640MB)만 내려받습니다.
@@ -48,12 +51,13 @@ python teeth_for_model.py <분할 폴더> <ct.nii.gz> <저장소>/ct-teeth.js [-
 ```
 
 - 자동 분할한 치아를 치아마다 자기 좌표(원점은 치아 목, +y는 머리 쪽, +z는 볼·입술 쪽)로 바꾸고 머리와 뿌리로 잘라 `ct-teeth.js`에 담습니다.
-- `index.html`은 옆에 `ct-teeth.js`가 있으면 표준형 대신 이 모양을 씁니다.
+- `find_remnants.py`에서 번호를 붙인 뿌리 조각도 함께 담습니다. 긴 축은 가까운 치아 둘에서 빌리고, 위쪽 35%를 잇몸 위로 나온 부분으로 봅니다.
+- `index.html`은 옆에 `ct-teeth.js`가 있으면 표준형 대신 이 모양을 씁니다. 뿌리 조각은 모형에서 뿌리나 밑동만 남은 자리에만 씁니다.
 - `--remap`은 분할 모델이 붙인 번호를 모형의 번호로 바꿀 때 씁니다.
-- `ct-teeth.js`에는 환자의 치아 모양이 들어 있습니다. 공개 저장소에 올릴지는 따로 정합니다.
+- `ct-teeth.js`에는 실제 치아 모양이 들어 있습니다. 이 저장소에는 올려 두었습니다.
 
 ## 4. 뷰어
 
 - `viewer_template.html`은 데이터 없이도 열립니다. GLB 파일을 화면에 끌어다 놓으면 브라우저 안에서만 읽어서 보여 줍니다.
-- 메시 이름으로 종류를 정합니다. `bone`, `teeth`는 임계값 메시이고, `..._fdi11` 같은 이름은 자동 분할 결과입니다.
+- 메시 이름으로 종류를 정합니다. `bone`, `teeth`는 임계값 메시이고, `..._fdi11` 같은 이름은 자동 분할 결과, `remnant_fdi46`은 뿌리 조각, `fragment_4`는 번호를 붙이지 않은 조각입니다.
 - 주소 끝에 `#view=right&bone=100&cut=40&hide=jaw,sinus&pick=implant`처럼 붙이면 그 상태로 열립니다.

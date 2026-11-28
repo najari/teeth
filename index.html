@@ -277,7 +277,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
 
   /* ---------- CT에서 뽑은 실제 치아 모양 (ct-teeth.js가 있을 때만) ---------- */
   // 치아마다 자기 좌표다. 원점은 치아 목, +y는 머리 쪽, +z는 볼·입술 쪽. 표준형 치아와 같은 약속이라 같은 자리에 그대로 세운다.
-  var CT = window.CT_TEETH || null, ctCount = 0;
+  var CT = window.CT_TEETH || null, ctCount = 0, ctRemnants = 0;
   function b64buffer(s) {
     var bin = atob(s), u = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
@@ -492,10 +492,12 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
       specs.forEach(function (sp0, i) {
         var quad = jaw === 'U' ? (side < 0 ? 1 : 2) : (side < 0 ? 4 : 3);
         var fdi = quad * 10 + i + 1, st = STATUS[fdi] || 'present';
-        // CT 모양이 있는 치아는 폭, 두께, 높이도 그 치아의 실제 값을 쓴다
-        var ct = CT && st === 'present' ? CT.teeth[fdi] : null;
-        var sp = ct ? { k: sp0.k, w: ct.w, d: ct.d, h: ct.h, tilt: sp0.tilt, root: ct.root } : sp0;
-        if (ct) ctCount++;
+        // CT 모양이 있는 치아는 폭, 두께, 높이도 그 치아의 실제 값을 쓴다.
+        // 뿌리 조각(remnant)의 모양은 뿌리나 밑동만 남은 자리에만 쓰고, 그 자리의 잇몸 높이는 표준 머리 높이로 정한다
+        var ctAny = CT ? CT.teeth[fdi] : null;
+        var ct = ctAny && (ctAny.remnant ? (st === 'root' || st === 'stump') : st === 'present') ? ctAny : null;
+        var sp = ct ? { k: sp0.k, w: ct.w, d: ct.d, h: ct.remnant ? sp0.h : ct.h, tilt: sp0.tilt, root: ct.root } : sp0;
+        if (ct) { if (ct.remnant) ctRemnants++; else ctCount++; }
         var sc = side * (s + sp.w / 2); s += sp.w;
         var p = arch.at(sc), tilt = sp.tilt * Math.PI / 180, adj = ADJ[fdi] || {};
         var dirY = jaw === 'U' ? 1 : -1;
@@ -538,7 +540,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
           var low = st === 'stump' ? 3.0 : 1.7;
           var sp2 = { k: sp.k, w: sp.w * 0.9, d: sp.d * 0.88, h: low, cuspScale: st === 'stump' ? 0.5 : 0.75 };
           crownMat = mat(st === 'stump' ? COLORS.stump : COLORS.rootcap, 0.85);
-          cm = new THREE.Mesh(cached('rem' + jaw + i + st, function () { return deform(crownFn(sp2), 28, 20); }), crownMat);
+          cm = new THREE.Mesh(ct ? ctGeo(ct.crown) : cached('rem' + jaw + i + st, function () { return deform(crownFn(sp2), 28, 20); }), crownMat);
         }
         info.mats.push(crownMat);
         cm.userData.tooth = info; flip.add(cm); pickables.push(cm); info.crownMeshes.push(cm);
@@ -643,7 +645,10 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
   }
 
   buildJaw('U'); buildJaw('L');
-  if (ctCount) document.getElementById('shapeNote').textContent = '뼈 높이는 단계값입니다. 치아 ' + ctCount + '개는 CT에서 뽑은 실제 모양을 표준 치열궁 위에 하나씩 세운 것이라 치아 사이 간격과 기울기는 실제와 다릅니다. 뿌리만 남은 치아와 임플란트, 보철은 표준형입니다.';
+  if (ctCount) document.getElementById('shapeNote').textContent = '뼈 높이는 단계값입니다. 치아 ' + ctCount + '개' +
+    (ctRemnants ? '와 뿌리만 남은 치아 ' + ctRemnants + '개' : '') +
+    '는 CT에서 뽑은 실제 모양을 표준 치열궁 위에 하나씩 세운 것이라 치아 사이 간격과 기울기는 실제와 다릅니다. ' +
+    (ctRemnants ? '' : '뿌리만 남은 치아와 ') + '임플란트, 보철은 표준형입니다.';
   document.querySelectorAll('[data-bone]').forEach(function (el) {
     el.style.background = REGIONS[el.getAttribute('data-bone')].lin.clone().convertLinearToSRGB().getStyle();
   });
