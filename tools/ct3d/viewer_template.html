@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CT 3D 표면 보기</title>
+<title>CT 3D 보기</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -60,8 +60,10 @@ h1 { font-size: 17px; font-weight: 600; margin: 0; }
 #stage canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
 #stage.drag { outline: 3px dashed var(--accent); outline-offset: -8px; }
 #msg { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--muted); }
-#msg[hidden] { display: none; }
 #sides { position: absolute; left: 12px; right: 12px; top: 10px; display: flex; justify-content: space-between; pointer-events: none; color: var(--muted); font-size: 12px; }
+#info { position: absolute; left: 12px; right: 12px; top: 34px; display: flex; justify-content: center; pointer-events: none; }
+#info span { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; max-width: 100%; }
+#info b { font-weight: 600; font-variant-numeric: tabular-nums; }
 #legend { position: absolute; left: 12px; right: 12px; bottom: 8px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); pointer-events: none; }
 #legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.25); }
 .panel { flex: none; background: var(--panel); padding: 10px 16px 12px; display: flex; flex-direction: column; gap: 9px; }
@@ -86,7 +88,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
 </head>
 <body>
 <header>
-  <h1>CT 3D 표면 보기</h1>
+  <h1>CT 3D 보기</h1>
   <div class="count" id="count"></div>
 </header>
 
@@ -96,10 +98,8 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     <label class="file" id="pick">파일 고르기<input type="file" id="file" accept=".glb" hidden></label>
   </div>
   <div id="sides" hidden><span>본인 오른쪽</span><span>본인 왼쪽</span></div>
-  <div id="legend" hidden>
-    <span><i style="background:#b9a57a"></i>뼈</span>
-    <span><i style="background:#f7f3e6"></i>치아</span>
-  </div>
+  <div id="info" hidden><span id="infoText"></span></div>
+  <div id="legend" hidden></div>
 </div>
 
 <div class="panel">
@@ -111,10 +111,8 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     <button type="button" data-view="top" aria-pressed="false">위에서</button>
     <button type="button" data-view="bottom" aria-pressed="false">아래에서</button>
   </div>
-  <div class="row" role="group" aria-label="표시 항목">
+  <div class="row" role="group" aria-label="표시 항목" id="toggles">
     <span class="lab">표시</span>
-    <button type="button" data-toggle="bone" aria-pressed="true">뼈</button>
-    <button type="button" data-toggle="teeth" aria-pressed="true">치아</button>
   </div>
   <div class="row">
     <label class="lab" for="opacity">뼈 농도</label>
@@ -124,7 +122,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     <label class="lab" for="cut">자르기</label>
     <div class="slider"><input type="range" id="cut" min="0" max="100" step="1" value="0"></div>
   </div>
-  <p class="note" id="note">CT 화소 값이 임계값을 넘는 부분의 표면입니다. 치아는 밝게 찍힌 머리 부분만 나오고, 뿌리는 턱뼈와 밝기가 비슷해 따로 나뉘지 않습니다. 설명용이며 진단 자료가 아닙니다. 좌우는 본인 기준입니다.</p>
+  <p class="note" id="note">설명용이며 진단 자료가 아닙니다. 좌우는 본인 기준입니다.</p>
 </div>
 
 <script id="glb-data" type="application/octet-stream">__GLB_BASE64__</script>
@@ -170,14 +168,70 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
   controls.enableDamping = true;
   controls.dampingFactor = 0.12;
 
+  // 메시 이름으로 종류를 정한다. bone, teeth는 임계값으로 뽑은 메시(volume_to_mesh.py),
+  // 나머지는 자동 분할 결과(labels_to_mesh.py)의 종류다. soft는 반투명으로 그리는 종류.
+  var KINDS = {
+    bone:    { label: '뼈',       color: 0xb9a57a, soft: true },
+    teeth:   { label: '치아',     color: 0xf7f3e6 },
+    jaw:     { label: '턱뼈',     color: 0xb9a57a, soft: true },
+    tooth:   { label: '치아',     color: 0xf7f3e6 },
+    pulp:    { label: '치수',     color: 0xd95a54 },
+    canal:   { label: '신경관',   color: 0xf2bf33 },
+    implant: { label: '임플란트', color: 0xaab3bd },
+    crown:   { label: '크라운',   color: 0xc9dcee },
+    bridge:  { label: '브릿지',   color: 0xe6d9f0 },
+    sinus:   { label: '상악동',   color: 0x8cbfe6, soft: true },
+    other:   { label: '기타',     color: 0x99ccb3, soft: true }
+  };
+  function kindOf(name) {
+    if (name === 'bone' || name === 'teeth') return name;
+    var m = /fdi(\d+)$/.exec(name);
+    if (/pulp/.test(name)) return 'pulp';
+    if (/canal/.test(name)) return 'canal';
+    if (m && +m[1] >= 11 && +m[1] <= 48) return 'tooth';
+    if (/jawbone/.test(name)) return 'jaw';
+    if (/sinus/.test(name)) return 'sinus';
+    if (name === 'implant' || name === 'crown' || name === 'bridge') return name;
+    return 'other';
+  }
+
+  var QUAD = { 1: '위 오른쪽', 2: '위 왼쪽', 3: '아래 왼쪽', 4: '아래 오른쪽' };
+  var TOOTH = ['가운데 앞니', '옆 앞니', '송곳니', '첫째 작은어금니', '둘째 작은어금니', '첫째 큰어금니', '둘째 큰어금니', '사랑니'];
+  var FIXED = {
+    lower_jawbone: '아래턱뼈', upper_jawbone: '위턱뼈',
+    left_inferior_alveolar_canal: '왼쪽 아래턱 신경관', right_inferior_alveolar_canal: '오른쪽 아래턱 신경관',
+    left_mandibular_incisive_canal_fdi103: '왼쪽 앞니 신경관', right_mandibular_incisive_canal_fdi104: '오른쪽 앞니 신경관',
+    lingual_canal: '혀 쪽 혈관 구멍',
+    left_maxillary_sinus: '왼쪽 상악동', right_maxillary_sinus: '오른쪽 상악동',
+    pharynx: '목 안 공간', implant: '임플란트', crown: '크라운', bridge: '브릿지',
+    bone: '뼈', teeth: '치아'
+  };
+  function labelOf(name, kind) {
+    var m = /fdi(\d+)$/.exec(name);
+    if ((kind === 'tooth' || kind === 'pulp') && m) {
+      var n = +m[1] % 100;
+      return QUAD[Math.floor(n / 10)] + ' ' + TOOTH[n % 10 - 1] + (kind === 'pulp' ? '의 치수' : '') + ' (' + n + '번)';
+    }
+    return FIXED[name] || name;
+  }
+
   // 자르기 평면: 얼굴 앞(+Z)에서부터 잘라 들어간다.
   var cutPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1e6);
-  var mats = {
-    bone: new THREE.MeshStandardMaterial({ color: 0xb9a57a, roughness: 0.75, metalness: 0, side: THREE.DoubleSide, transparent: true, opacity: 0.55, depthWrite: false, clippingPlanes: [cutPlane] }),
-    teeth: new THREE.MeshStandardMaterial({ color: 0xf7f3e6, roughness: 0.35, metalness: 0, side: THREE.DoubleSide, clippingPlanes: [cutPlane] })
-  };
-  var parts = {};
-  var model = null, center = new THREE.Vector3(), fit = 60, zMin = -60, zMax = 60;
+  var mats = {};
+  Object.keys(KINDS).forEach(function (k) {
+    var soft = !!KINDS[k].soft;
+    mats[k] = new THREE.MeshStandardMaterial({
+      color: KINDS[k].color, roughness: soft ? 0.75 : 0.4, metalness: k === 'implant' ? 0.5 : 0,
+      side: THREE.DoubleSide, transparent: soft, opacity: soft ? 0.55 : 1, depthWrite: !soft,
+      clippingPlanes: [cutPlane]
+    });
+  });
+  var pickMat = new THREE.MeshStandardMaterial({ color: 0x1fa697, roughness: 0.4, metalness: 0, side: THREE.DoubleSide, clippingPlanes: [cutPlane] });
+
+  var parts = {};            // 종류 → 메시 목록
+  var info = {}, partInfo = {};
+  var model = null, picked = null;
+  var center = new THREE.Vector3(), fit = 60, zMin = -60, zMax = 60;
   var dirty = true;
 
   function resize() {
@@ -218,21 +272,75 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     dirty = true;
   }
 
+  function setVisible(kind, on) {
+    (parts[kind] || []).forEach(function (o) { o.visible = on; });
+    if (picked && picked.userData.kind === kind && !on) select(null);
+    dirty = true;
+  }
+
+  function buildPanel(tris) {
+    var kinds = Object.keys(KINDS).filter(function (k) { return parts[k]; });
+    var segmented = !!(parts.tooth || parts.jaw);
+
+    var toggles = document.getElementById('toggles');
+    toggles.querySelectorAll('button').forEach(function (b) { b.remove(); });
+    var legend = document.getElementById('legend');
+    legend.textContent = '';
+    kinds.forEach(function (k) {
+      var on = !(start.hide || '').split(',').includes(k);
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = KINDS[k].label;
+      b.setAttribute('aria-pressed', String(on));
+      b.addEventListener('click', function () {
+        var now = b.getAttribute('aria-pressed') !== 'true';
+        b.setAttribute('aria-pressed', String(now));
+        setVisible(k, now);
+      });
+      toggles.appendChild(b);
+      setVisible(k, on);
+
+      var item = document.createElement('span');
+      var chip = document.createElement('i');
+      chip.style.background = '#' + KINDS[k].color.toString(16).padStart(6, '0');
+      item.appendChild(chip);
+      item.appendChild(document.createTextNode(KINDS[k].label));
+      legend.appendChild(item);
+    });
+    legend.hidden = false;
+
+    var bits = [];
+    if (segmented) {
+      bits.push('치아 ' + (parts.tooth || []).length + '개');
+      bits.push('구조 ' + kinds.reduce(function (n, k) { return n + parts[k].length; }, 0) + '개');
+    }
+    bits.push('삼각형 ' + Math.round(tris / 1000) + '천 개');
+    if (info.bone_threshold) bits.push('임계값 뼈 ' + info.bone_threshold + ', 치아 ' + info.teeth_threshold);
+    document.getElementById('count').textContent = bits.join(' · ');
+
+    document.getElementById('note').textContent = (segmented
+      ? 'CT를 AI 모델이 자동으로 나눈 결과입니다. 번호가 틀리거나 경계가 어긋난 곳이 있을 수 있습니다. 치아나 뼈를 누르면 이름이 나옵니다. '
+      : 'CT 화소 값이 임계값을 넘는 부분의 표면입니다. 치아는 밝게 찍힌 머리 부분만 나오고, 뿌리는 턱뼈와 밝기가 비슷해 따로 나뉘지 않습니다. ')
+      + '설명용이며 진단 자료가 아닙니다. 좌우는 본인 기준입니다.';
+  }
+
   function show(buffer) {
     msgText.textContent = '불러오는 중입니다.';
     pick.hidden = true;
     msg.hidden = false;
     new THREE.GLTFLoader().parse(buffer, '', function (gltf) {
       if (model) scene.remove(model);
+      select(null);
       model = gltf.scene;
       parts = {};
       var tris = 0;
       model.traverse(function (o) {
         if (!o.isMesh) return;
-        var name = /teeth/i.test(o.name + ' ' + (o.parent ? o.parent.name : '')) ? 'teeth' : 'bone';
-        o.material = mats[name];
-        o.renderOrder = name === 'teeth' ? 0 : 1;   // 불투명한 치아를 먼저, 반투명한 뼈를 나중에
-        (parts[name] = parts[name] || []).push(o);
+        var kind = kindOf(o.name);
+        o.userData.kind = kind;
+        o.material = mats[kind];
+        o.renderOrder = KINDS[kind].soft ? 1 : 0;   // 불투명한 것을 먼저, 반투명한 것을 나중에
+        (parts[kind] = parts[kind] || []).push(o);
         tris += o.geometry.index ? o.geometry.index.count / 3 : o.geometry.attributes.position.count / 3;
       });
       scene.add(model);
@@ -246,17 +354,14 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
       camera.updateProjectionMatrix();
       applyCut();
 
-      var info = {};
-      try { info = JSON.parse(document.getElementById('mesh-info').textContent); } catch (e) {}
-      var bits = ['크기 ' + size.x.toFixed(0) + ' × ' + size.y.toFixed(0) + ' × ' + size.z.toFixed(0) + 'mm',
-                  '삼각형 ' + Math.round(tris / 1000) + '천 개'];
-      if (info.bone_threshold) bits.push('임계값 뼈 ' + info.bone_threshold + ', 치아 ' + info.teeth_threshold);
-      document.getElementById('count').textContent = bits.join(' · ');
+      partInfo = {};
+      (info.parts || []).forEach(function (p) { partInfo[p.name] = p; });
+      buildPanel(tris);
 
       msg.hidden = true;
-      document.getElementById('legend').hidden = false;
       resize();
       setView(VIEWS[start.view] ? start.view : 'front');
+      if (start.pick) model.traverse(function (o) { if (o.isMesh && o.name === start.pick) select(o); });
     }, function () {
       msgText.textContent = '이 파일을 읽지 못했습니다. GLB 파일이 맞는지 확인해 주세요.';
       pick.hidden = false;
@@ -272,19 +377,56 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
 
   function applyOpacity() {
     var v = Number(document.getElementById('opacity').value) / 100;
-    mats.bone.opacity = v;
-    mats.bone.transparent = v < 1;
-    mats.bone.depthWrite = v >= 1;
-    mats.bone.needsUpdate = true;
+    Object.keys(KINDS).forEach(function (k) {
+      if (!KINDS[k].soft) return;
+      mats[k].opacity = v;
+      mats[k].transparent = v < 1;
+      mats[k].depthWrite = v >= 1;
+      mats[k].needsUpdate = true;
+    });
     dirty = true;
   }
   document.getElementById('opacity').addEventListener('input', applyOpacity);
 
-  // 주소 끝에 #view=right&bone=100&cut=40 처럼 붙이면 그 상태로 열린다.
+  // 누른 구조의 이름을 보여 준다. 임계값 메시(bone, teeth)는 나뉘어 있지 않으므로 고르지 않는다.
+  function select(mesh) {
+    if (picked) picked.material = mats[picked.userData.kind];
+    picked = mesh;
+    var box = document.getElementById('info');
+    if (!mesh) { box.hidden = true; dirty = true; return; }
+    mesh.material = pickMat;
+    var p = partInfo[mesh.name];
+    var text = document.getElementById('infoText');
+    text.textContent = '';
+    var b = document.createElement('b');
+    b.textContent = labelOf(mesh.name, mesh.userData.kind);
+    text.appendChild(b);
+    if (p && p.volume_mm3) text.appendChild(document.createTextNode(' · 부피 ' + Math.round(p.volume_mm3) + 'mm³'));
+    box.hidden = false;
+    dirty = true;
+  }
+  var raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2(), down = null;
+  renderer.domElement.addEventListener('pointerdown', function (e) { down = [e.clientX, e.clientY]; });
+  renderer.domElement.addEventListener('pointerup', function (e) {
+    if (!model || !down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5) return;   // 돌리려고 끈 것은 누른 것으로 보지 않는다
+    var r = renderer.domElement.getBoundingClientRect();
+    pointer.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1);
+    raycaster.setFromCamera(pointer, camera);
+    var hits = raycaster.intersectObject(model, true).filter(function (h) {
+      var k = h.object.userData.kind;
+      return h.object.visible && k !== 'bone' && k !== 'teeth' && cutPlane.distanceToPoint(h.point) >= 0;
+    });
+    // 반투명한 턱뼈 뒤의 치아를 먼저 고를 수 있게, 불투명한 것이 맞았으면 그것을 고른다.
+    var solid = hits.filter(function (h) { return !KINDS[h.object.userData.kind].soft || mats[h.object.userData.kind].opacity >= 1; });
+    var hit = solid[0] || hits[0];
+    select(hit ? hit.object : null);
+  });
+
+  // 주소 끝에 #view=right&bone=100&cut=40&hide=jaw,sinus&pick=implant 처럼 붙이면 그 상태로 열린다.
   var start = {};
   location.hash.replace(/^#/, '').split('&').forEach(function (kv) {
     var p = kv.split('=');
-    if (p[0]) start[p[0]] = p[1];
+    if (p[0]) start[p[0]] = decodeURIComponent(p[1] || '');
   });
   if (start.bone) { document.getElementById('opacity').value = start.bone; applyOpacity(); }
   if (start.cut) document.getElementById('cut').value = start.cut;
@@ -292,20 +434,12 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
   document.querySelectorAll('[data-view]').forEach(function (b) {
     b.addEventListener('click', function () { if (model) setView(b.getAttribute('data-view')); });
   });
-  document.querySelectorAll('[data-toggle]').forEach(function (b) {
-    b.addEventListener('click', function () {
-      var on = b.getAttribute('aria-pressed') !== 'true';
-      b.setAttribute('aria-pressed', String(on));
-      (parts[b.getAttribute('data-toggle')] || []).forEach(function (o) { o.visible = on; });
-      dirty = true;
-    });
-  });
 
   // 파일을 직접 고르거나 끌어다 놓아 여는 경로. 파일은 이 브라우저 안에서만 읽는다.
   function openFile(file) {
     if (!file) return;
     var r = new FileReader();
-    r.onload = function () { show(r.result); };
+    r.onload = function () { info = {}; show(r.result); };
     r.readAsArrayBuffer(file);
   }
   document.getElementById('file').addEventListener('change', function (e) { openFile(e.target.files[0]); });
@@ -320,6 +454,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
   // build_viewer.py가 넣어 준 데이터가 있으면 바로 연다.
   var b64 = document.getElementById('glb-data').textContent.trim();
   if (b64 && b64.indexOf('__GLB') !== 0) {
+    try { info = JSON.parse(document.getElementById('mesh-info').textContent); } catch (e) { info = {}; }
     var bin = atob(b64);
     var bytes = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);

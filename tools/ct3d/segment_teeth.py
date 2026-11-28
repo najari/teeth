@@ -5,12 +5,17 @@ setup_segmentation.py로 만든 가상환경의 python으로 실행한다.
 사용법:
     python segment_teeth.py <ct.nii.gz> <출력 폴더> [--device gpu|cpu]
 
-출력 폴더에 구조마다 NIfTI 파일이 하나씩 생긴다 (예: upper_right_central_incisor_fdi11.nii.gz).
-걸린 시간과 찾은 구조 목록은 segmentation_info.json에 적는다.
+출력:
+    teeth_labels.nii.gz       화소마다 구조 번호가 들어 있는 볼륨. 격자는 입력 CT와 같다
+    segmentation_info.json    구조 번호와 이름, 찾은 구조별 화소 수, 걸린 시간
 
+GPU가 없어도 돌아간다. RAM 여유가 10GB쯤 필요하다.
 모든 계산은 이 PC 안에서 한다. 처음 실행할 때 모델 가중치만 내려받는다.
+TotalSegmentator는 기본으로 실행 통계(작업 이름, 버전, 운영체제 같은 값. 영상은 아님)를
+자기 서버로 보내는데, 이 스크립트는 그 기능을 끄고 실행한다.
 """
 import argparse
+import importlib.metadata
 import json
 import time
 from pathlib import Path
@@ -18,7 +23,20 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import torch
-from totalsegmentator.python_api import totalsegmentator
+import totalsegmentator.python_api as ts_api
+from totalsegmentator.config import set_config_key, setup_totalseg
+from totalsegmentator.map_to_binary import class_map
+
+
+def device_name(device) -> str:
+    if hasattr(device, "type"):  # torch.device
+        return "gpu" if device.type == "cuda" else device.type
+    return str(device)
+
+
+# TotalSegmentator 2.18.0은 CPU로 돌릴 때 치아 범위를 찾는 단계로 장치 이름 대신 None을 넘겨서 멈춘다.
+# 문자열도 처리하는 함수로 바꿔 끼운다. GPU에서는 원래 함수와 결과가 같다.
+ts_api.convert_device_to_string = device_name
 
 
 def main() -> None:
@@ -29,24 +47,32 @@ def main() -> None:
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 실행 통계 전송을 끈다. 설정 파일은 사용자 폴더의 .totalsegmentator/config.json에 있다.
+    setup_totalseg()
+    set_config_key("send_usage_stats", False)
+
     gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
     print(f"장치: {args.device}" + (f" ({gpu})" if gpu and args.device != "cpu" else ""), flush=True)
 
+    # 구조마다 파일을 따로 저장하는 기본 방식은 원본 해상도 볼륨을 여러 벌 메모리에 올려서
+    # RAM 16GB인 PC에서 메모리 부족으로 멈춘다. 번호 볼륨 하나(ml=True)로 저장한다.
+    labels_path = args.out_dir / "teeth_labels.nii.gz"
     start = time.time()
-    totalsegmentator(args.volume, args.out_dir, task="teeth", device=args.device)
+    ts_api.totalsegmentator(args.volume, labels_path, task="teeth", device=args.device, ml=True)
     seconds = round(time.time() - start)
 
-    found = {}
-    for f in sorted(args.out_dir.glob("*.nii.gz")):
-        voxels = int(np.count_nonzero(np.asanyarray(nib.load(f).dataobj)))
-        if voxels:
-            found[f.name[: -len(".nii.gz")]] = voxels
+    names = class_map["teeth"]  # 번호 → 이름
+    seg = np.asanyarray(nib.load(labels_path).dataobj)
+    counts = np.bincount(seg.ravel(), minlength=max(names) + 1)
+    found = {names[i]: int(counts[i]) for i in sorted(names) if counts[i]}
 
     info = {
         "task": "teeth",
+        "totalsegmentator_version": importlib.metadata.version("TotalSegmentator"),
         "device": args.device,
         "gpu": gpu,
         "seconds": seconds,
+        "labels": {str(i): names[i] for i in sorted(names)},
         "structures_found": len(found),
         "voxels": found,
     }
