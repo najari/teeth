@@ -6,12 +6,15 @@
 //! 사용법:
 //!     ct3d-viewer [파일.glb | DICOM 폴더] [--view front|right|left|top|bottom] [--hide jaw,sinus]
 //!                 [--bone 0..100] [--cut 0..100] [--pick 구조이름] [--export 저장.glb] [--screenshot 저장.png]
+//!                 [--seg 분할폴더 [--assign 1:47,2:46] [--ai-jaws]]
 //! DICOM 폴더를 주면 뼈와 치아 표면을 그 자리에서 만든다(tools/ct3d/volume_to_mesh.py와 같은 순서).
+//! --seg로 segment_teeth.py의 출력 폴더를 함께 주면 구조별 메시를 만든다(find_remnants.py, labels_to_mesh.py와 같은 순서).
 //! 파일이나 폴더는 창에 끌어다 놓아도 열린다. --screenshot을 주면 화면을 PNG로 저장하고 닫는다(확인용).
 
 mod ctproc;
 mod render;
 mod scene;
+mod seg;
 
 use eframe::egui::{self, Color32, RichText, Sense, Vec2};
 use glam::Vec3;
@@ -38,6 +41,16 @@ struct Args {
     screenshot: Option<PathBuf>,
     click: Option<(f32, f32)>, // 3D 화면 안의 비율 좌표(0..1)를 누른 것처럼 한다 (확인용)
     export: Option<PathBuf>,   // DICOM에서 만든 메시를 GLB로 저장
+    seg: Option<PathBuf>,      // segment_teeth.py의 출력 폴더
+    assign: std::collections::HashMap<usize, u32>, // 뿌리 조각 후보 번호 → FDI 번호
+    ai_jaws: bool,
+}
+
+#[derive(Clone)]
+struct SegOptions {
+    dir: PathBuf,
+    assign: std::collections::HashMap<usize, u32>,
+    ai_jaws: bool,
 }
 
 type Job = std::sync::mpsc::Receiver<Result<Vec<Part>, String>>;
@@ -54,6 +67,19 @@ fn parse_args() -> Args {
             "--pick" => a.pick = it.next(),
             "--screenshot" => a.screenshot = it.next().map(PathBuf::from),
             "--export" => a.export = it.next().map(PathBuf::from),
+            "--seg" => a.seg = it.next().map(PathBuf::from),
+            "--ai-jaws" => a.ai_jaws = true,
+            "--assign" => {
+                a.assign = it
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|kv| {
+                        let (k, v) = kv.split_once(':')?;
+                        Some((k.trim().parse().ok()?, v.trim().parse().ok()?))
+                    })
+                    .collect()
+            }
             "--click" => {
                 a.click = it.next().and_then(|v| {
                     let (x, y) = v.split_once(',')?;
@@ -91,6 +117,7 @@ struct App {
     pending_pick: Option<String>,
     pending_click: Option<(f32, f32)>,
     export: Option<PathBuf>,
+    seg: Option<SegOptions>,
     job: Option<Job>,
     progress: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     frames: u32,
@@ -126,6 +153,7 @@ impl App {
             pending_pick: args.pick,
             pending_click: args.click,
             export: args.export,
+            seg: args.seg.map(|dir| SegOptions { dir, assign: args.assign, ai_jaws: args.ai_jaws }),
             job: None,
             progress: Default::default(),
             frames: 0,
@@ -156,12 +184,17 @@ impl App {
             let progress = self.progress.clone();
             progress.lock().unwrap().clear();
             self.message = "CT를 읽는 중입니다.".into();
+            let seg = self.seg.clone();
             std::thread::spawn(move || {
                 let log = move |s: String| {
                     println!("{s}");
                     progress.lock().unwrap().push(s);
                 };
-                let _ = tx.send(ctproc::threshold_meshes(&path, &ctproc::Params::default(), &log));
+                let result = match seg {
+                    None => ctproc::threshold_meshes(&path, &ctproc::Params::default(), &log),
+                    Some(o) => segmented_meshes(&path, &o, &log),
+                };
+                let _ = tx.send(result);
             });
             self.job = Some(rx);
             return;
@@ -248,6 +281,25 @@ impl App {
         let solid = hits.iter().find(|(_, i)| !(KINDS[self.parts[*i].kind].soft && soft_hidden));
         self.picked = solid.or(hits.first()).map(|h| h.1);
     }
+}
+
+/// DICOM과 AI 분할 결과로 구조별 메시를 만든다
+fn segmented_meshes(dicom: &std::path::Path, o: &SegOptions, log: ctproc::Log) -> Result<Vec<Part>, String> {
+    let t = std::time::Instant::now();
+    let ct = ctproc::read_dicom_dir(dicom)?;
+    log(format!("DICOM 읽음 ({:.1}초)", t.elapsed().as_secs_f32()));
+    let s = seg::read_seg(&o.dir, &ct)?;
+    // 격자가 맞는지 확인: AI가 치아로 잡은 칸은 CT에서 밝아야 한다
+    let tooth_ids: std::collections::HashSet<u8> = s
+        .names
+        .iter()
+        .filter(|(_, n)| KINDS[scene::kind_of(n)].key == "tooth")
+        .map(|(l, _)| *l)
+        .collect();
+    let (sum, n) = s.labels.iter().zip(&ct.data).filter(|(l, _)| tooth_ids.contains(l)).fold((0f64, 0usize), |(a, b), (_, &v)| (a + v as f64, b + 1));
+    log(format!("분할 결과 읽음: 구조 {}개, 치아로 잡힌 칸의 평균 밝기 {:.0} ({:.1}초)", s.names.len(), sum / n.max(1) as f64, t.elapsed().as_secs_f32()));
+    let cands = seg::find_remnants(&ct, &s, &o.assign, log);
+    Ok(seg::part_meshes(&ct, &s, &cands, o.ai_jaws, log))
 }
 
 fn install_korean_font(ctx: &egui::Context) {

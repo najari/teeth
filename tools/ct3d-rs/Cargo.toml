@@ -18,6 +18,7 @@ fast-surface-nets = "0.2"
 dicom-object = "0.10"
 dicom-dictionary-std = "0.10"
 dicom-pixeldata = { version = "0.10", features = ["ndarray"] }
+nifti = { version = "0.18", default-features = false }
 
 [profile.release]
 debug = false

@@ -3,6 +3,7 @@
 CT를 3D로 보는 데스크톱 뷰어입니다. [Rust·egui 전환 검토](../../docs/Rust-egui-전환-검토.md)의 1·2단계로 만들었고, 웹 뷰어(`viewer_template.html`)와 같은 조작을 합니다.
 
 - **DICOM 폴더를 바로 열기:** 뼈와 치아 표면을 그 자리에서 만듭니다. [`volume_to_mesh.py`](../ct3d/volume_to_mesh.py)와 같은 순서이고, Python 없이 돌아갑니다.
+- **AI 분할 결과로 구조별 메시:** DICOM 폴더와 함께 `segment_teeth.py`의 출력 폴더를 주면 치아·뿌리 조각·턱뼈 등을 구조별로 만듭니다. [`find_remnants.py`](../ct3d/find_remnants.py), [`labels_to_mesh.py`](../ct3d/labels_to_mesh.py)와 같은 순서입니다. AI 분할 자체는 Python으로 돌립니다.
 - **GLB 파일 열기:** [`tools/ct3d`](../ct3d/)의 Python 스크립트가 만든 `ct_surface.glb`, `teeth_parts.glb`를 엽니다.
 
 - 보는 방향 5가지, 끌어서 돌리기, 휠로 확대
@@ -30,6 +31,9 @@ meshopt가 C++ 라이브러리를 빌드하므로 C++ 컴파일러(Windows는 Vi
 | `--pick 구조이름` | 처음에 고를 구조 |
 | `--click 0.5,0.47` | 3D 화면의 그 비율 위치를 누른 것처럼 함(확인용) |
 | `--export 저장.glb` | DICOM에서 만든 메시를 GLB로 저장 |
+| `--seg 분할폴더` | AI 분할 결과(`teeth_labels.nii.gz`, `segmentation_info.json`)로 구조별 메시를 만듦 |
+| `--assign 1:47,2:46` | 뿌리 조각 후보 번호에 치아 번호를 붙임. 후보 목록은 콘솔에 나옴 |
+| `--ai-jaws` | 턱뼈를 CT 밝기로 다시 뽑지 않고 AI 결과를 그대로 씀 |
 | `--screenshot 저장.png` | 화면을 저장하고 닫음(확인용). 평균 프레임 시간도 출력 |
 
 DICOM 폴더를 열면 단계별 진행과 걸린 시간을 콘솔과 화면에 보여 줍니다. 임계값(뼈 1000, 치아 2800, 법랑질 3300)은 Python 판과 같고, VATECH 콘빔 CT 한 건에 맞춘 값입니다.
@@ -40,6 +44,7 @@ DICOM 폴더를 열면 단계별 진행과 걸린 시간을 콘솔과 화면에 
 |---|---|
 | `src/main.rs` | 창, 패널, 카메라 조작, 고르기 |
 | `src/ctproc.rs` | DICOM 읽기, 축소·흐리기·덩어리 나누기·넓히기, 등가면(Surface Nets), Taubin, 삼각형 줄이기(meshopt), GLB 저장 |
+| `src/seg.rs` | AI 분할 결과 읽기, 뿌리 조각 찾기, 구조별 메시, 턱뼈 전체 |
 | `src/scene.rs` | GLB 읽기, 이름으로 종류와 한글 이름 정하기, 광선-삼각형 검사 |
 | `src/render.rs` | wgpu로 별도 텍스처에 그리기(4배 MSAA, 깊이 버퍼, 불투명 먼저·반투명은 먼 것부터) |
 | `src/shader.wgsl` | 조명, 양면 칠하기, 자르기 평면 |

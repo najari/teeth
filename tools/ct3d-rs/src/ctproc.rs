@@ -45,7 +45,7 @@ pub struct Volume {
 }
 
 impl Volume {
-    fn idx(&self, x: usize, y: usize, z: usize) -> usize {
+    pub(crate) fn idx(&self, x: usize, y: usize, z: usize) -> usize {
         (z * self.dims[1] + y) * self.dims[0] + x
     }
 }
@@ -93,7 +93,7 @@ pub fn read_dicom_dir(dir: &Path) -> Result<Volume, String> {
 }
 
 /// 2×2×2 칸의 평균으로 줄인다 (SimpleITK BinShrink와 같음)
-fn shrink2(v: &Volume) -> Volume {
+pub(crate) fn shrink2(v: &Volume) -> Volume {
     let d = [v.dims[0] / 2, v.dims[1] / 2, v.dims[2] / 2];
     let mut out = vec![0f32; d[0] * d[1] * d[2]];
     out.par_chunks_mut(d[0] * d[1]).enumerate().for_each(|(z, plane)| {
@@ -116,7 +116,7 @@ fn shrink2(v: &Volume) -> Volume {
 }
 
 /// 축마다 따로 하는 가우스 흐리기. sigma는 mm
-fn gaussian(v: &mut Volume, sigma_mm: f32) {
+pub(crate) fn gaussian(v: &mut Volume, sigma_mm: f32) {
     let [nx, ny, nz] = v.dims;
     for axis in 0..3 {
         let sigma = sigma_mm / v.spacing[axis];
@@ -147,7 +147,7 @@ fn gaussian(v: &mut Volume, sigma_mm: f32) {
 }
 
 /// 면으로 이웃한(6방향) 칸끼리 이은 덩어리 번호. 0은 바깥. 두 번째 값은 덩어리별 칸 수(0번은 비움)
-fn label(mask: &[bool], dims: [usize; 3]) -> (Vec<u32>, Vec<usize>) {
+pub(crate) fn label(mask: &[bool], dims: [usize; 3]) -> (Vec<u32>, Vec<usize>) {
     let [nx, ny, nz] = dims;
     let mut lab = vec![0u32; mask.len()];
     let mut sizes = vec![0usize];
@@ -182,16 +182,89 @@ fn label(mask: &[bool], dims: [usize; 3]) -> (Vec<u32>, Vec<usize>) {
 }
 
 /// 반지름 r칸의 공 모양으로 넓힌다 (SimpleITK BinaryDilate의 기본 모양)
-fn dilate(mask: &[bool], dims: [usize; 3], r: isize) -> Vec<bool> {
+pub(crate) fn dilate(mask: &[bool], dims: [usize; 3], r: isize) -> Vec<bool> {
+    dilate_with(mask, dims, &ball(r))
+}
+
+/// 반지름 r칸의 마름모 모양으로 넓힌다 (scipy binary_dilation을 iterations=r로 돌린 것과 같음)
+pub(crate) fn dilate_l1(mask: &[bool], dims: [usize; 3], r: isize) -> Vec<bool> {
+    dilate_with(mask, dims, &diamond(r))
+}
+
+type Offsets = Vec<(isize, isize, isize)>;
+
+fn cube(r: isize) -> impl Iterator<Item = (isize, isize, isize)> {
+    (-r..=r).flat_map(move |z| (-r..=r).flat_map(move |y| (-r..=r).map(move |x| (x, y, z))))
+}
+
+fn ball(r: isize) -> Offsets {
+    cube(r).filter(|(x, y, z)| x * x + y * y + z * z <= r * r).collect()
+}
+
+fn diamond(r: isize) -> Offsets {
+    cube(r).filter(|(x, y, z)| x.abs() + y.abs() + z.abs() <= r).collect()
+}
+
+/// 마름모 모양으로 깎는다. 볼륨 바깥은 비어 있다고 본다 (scipy binary_erosion의 기본)
+pub(crate) fn erode_l1(mask: &[bool], dims: [usize; 3], r: isize) -> Vec<bool> {
     let [nx, ny, nz] = dims;
-    let offsets: Vec<(isize, isize, isize)> = (-r..=r)
-        .flat_map(|z| (-r..=r).flat_map(move |y| (-r..=r).map(move |x| (x, y, z))))
-        .filter(|(x, y, z)| x * x + y * y + z * z <= r * r)
-        .collect();
+    let offsets = diamond(r);
+    let mut out = vec![false; mask.len()];
+    out.par_iter_mut().enumerate().for_each(|(i, o)| {
+        if !mask[i] {
+            return;
+        }
+        let (x, y, z) = ((i % nx) as isize, ((i / nx) % ny) as isize, (i / (nx * ny)) as isize);
+        *o = offsets.iter().all(|(dx, dy, dz)| {
+            let (a, b, c) = (x + dx, y + dy, z + dz);
+            a >= 0 && b >= 0 && c >= 0 && (a as usize) < nx && (b as usize) < ny && (c as usize) < nz
+                && mask[(c as usize * ny + b as usize) * nx + a as usize]
+        });
+    });
+    out
+}
+
+/// 바깥과 이어지지 않은 빈 곳을 메운다. dims의 축 수만큼(2차원이면 nz = 1) 면 이웃으로 본다
+pub(crate) fn fill_holes(mask: &[bool], dims: [usize; 3]) -> Vec<bool> {
+    let [nx, ny, nz] = dims;
+    let mut outside = vec![false; mask.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    for z in 0..nz {
+        for y in 0..ny {
+            for x in 0..nx {
+                let border = x == 0 || y == 0 || x + 1 == nx || y + 1 == ny || (nz > 1 && (z == 0 || z + 1 == nz));
+                let i = (z * ny + y) * nx + x;
+                if border && !mask[i] && !outside[i] {
+                    outside[i] = true;
+                    stack.push(i);
+                }
+            }
+        }
+    }
+    while let Some(i) = stack.pop() {
+        let (x, y, z) = (i % nx, (i / nx) % ny, i / (nx * ny));
+        let mut visit = |j: usize| {
+            if !mask[j] && !outside[j] {
+                outside[j] = true;
+                stack.push(j);
+            }
+        };
+        if x > 0 { visit(i - 1) }
+        if x + 1 < nx { visit(i + 1) }
+        if y > 0 { visit(i - nx) }
+        if y + 1 < ny { visit(i + nx) }
+        if z > 0 { visit(i - nx * ny) }
+        if z + 1 < nz { visit(i + nx * ny) }
+    }
+    outside.into_iter().map(|o| !o).collect()
+}
+
+fn dilate_with(mask: &[bool], dims: [usize; 3], offsets: &Offsets) -> Vec<bool> {
+    let [nx, ny, nz] = dims;
     let mut out = vec![false; mask.len()];
     for (i, _) in mask.iter().enumerate().filter(|(_, m)| **m) {
         let (x, y, z) = ((i % nx) as isize, ((i / nx) % ny) as isize, (i / (nx * ny)) as isize);
-        for (dx, dy, dz) in &offsets {
+        for (dx, dy, dz) in offsets {
             let (a, b, c) = (x + dx, y + dy, z + dz);
             if a >= 0 && b >= 0 && c >= 0 && (a as usize) < nx && (b as usize) < ny && (c as usize) < nz {
                 out[(c as usize * ny + b as usize) * nx + a as usize] = true;
@@ -201,13 +274,13 @@ fn dilate(mask: &[bool], dims: [usize; 3], r: isize) -> Vec<bool> {
     out
 }
 
-struct Mesh {
-    pos: Vec<Vec3>, // 환자 좌표(mm)
-    idx: Vec<u32>,
+pub(crate) struct Mesh {
+    pub(crate) pos: Vec<Vec3>, // 환자 좌표(mm)
+    pub(crate) idx: Vec<u32>,
 }
 
 /// 값이 level인 면을 Surface Nets로 뽑는다. 테두리 한 칸을 바깥으로 채워 닫힌 면이 되게 한다.
-fn isosurface(v: &Volume, level: f32) -> Mesh {
+pub(crate) fn isosurface(v: &Volume, level: f32) -> Mesh {
     let [nx, ny, nz] = v.dims;
     let shape = RuntimeShape::<u32, 3>::new([nx as u32 + 2, ny as u32 + 2, nz as u32 + 2]);
     let mut sdf = vec![1.0f32; shape.size() as usize];
@@ -237,7 +310,7 @@ fn isosurface(v: &Volume, level: f32) -> Mesh {
 }
 
 /// Taubin 매끄럽게: 이웃 평균 쪽으로 당겼다가(λ) 반대로 밀어(μ) 부피가 줄지 않게 한다
-fn taubin(m: &mut Mesh, pairs: usize) {
+pub(crate) fn taubin(m: &mut Mesh, pairs: usize) {
     let n = m.pos.len();
     let mut nbr: Vec<Vec<u32>> = vec![Vec::new(); n];
     for t in m.idx.chunks_exact(3) {
@@ -265,7 +338,7 @@ fn taubin(m: &mut Mesh, pairs: usize) {
 }
 
 /// 삼각형 수를 target 가까이로 줄이고, 쓰지 않는 꼭짓점을 버린다
-fn simplify(m: &Mesh, target: usize) -> Mesh {
+pub(crate) fn simplify(m: &Mesh, target: usize) -> Mesh {
     if m.idx.len() / 3 <= target {
         return Mesh { pos: m.pos.clone(), idx: m.idx.clone() };
     }
@@ -300,7 +373,7 @@ fn normals(pos: &[Vec3], idx: &[u32]) -> Vec<Vec3> {
 }
 
 /// 환자 좌표(LPS)를 뷰어 좌표(x 환자 왼쪽, y 위, z 얼굴 앞)로. 원점은 볼륨 중심
-fn to_part(name: &str, m: Mesh, centre: Vec3) -> Part {
+pub(crate) fn to_part(name: &str, m: Mesh, centre: Vec3) -> Part {
     let pos: Vec<Vec3> = m.pos.iter().map(|p| {
         let q = *p - centre;
         Vec3::new(q.x, q.z, -q.y)
