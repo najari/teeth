@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CT 3D 표면 보기</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* index.html과 같은 색과 배치: 화면을 채우는 3D 무대 하나, 그 아래 조작 패널 한 장 */
+  --bg: #e7ecea;
+  --stage-hi: #f6f8f7;
+  --panel: #fafbfa;
+  --ink: #162324;
+  --muted: #55676a;
+  --line: #cdd7d5;
+  --accent: #0c7268;
+  --accent-ink: #ffffff;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101718;
+    --stage-hi: #1c2829;
+    --panel: #172122;
+    --ink: #e4edec;
+    --muted: #93a6a6;
+    --line: #2a393a;
+    --accent: #52cdbd;
+    --accent-ink: #06211e;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  -webkit-text-size-adjust: 100%;
+}
+header { flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; padding: 10px 16px 8px; }
+h1 { font-size: 17px; font-weight: 600; margin: 0; }
+.count { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+#stage {
+  flex: 1 1 auto;
+  min-height: 280px;
+  position: relative;
+  background: radial-gradient(ellipse at 50% 42%, var(--stage-hi), var(--bg) 78%);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+#stage canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+#stage.drag { outline: 3px dashed var(--accent); outline-offset: -8px; }
+#msg { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--muted); }
+#msg[hidden] { display: none; }
+#sides { position: absolute; left: 12px; right: 12px; top: 10px; display: flex; justify-content: space-between; pointer-events: none; color: var(--muted); font-size: 12px; }
+#legend { position: absolute; left: 12px; right: 12px; bottom: 8px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); pointer-events: none; }
+#legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.25); }
+.panel { flex: none; background: var(--panel); padding: 10px 16px 12px; display: flex; flex-direction: column; gap: 9px; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.row > .lab { color: var(--muted); font-size: 12px; flex: none; width: 46px; }
+button, .file {
+  font: inherit; font-size: 13px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 11px;
+  min-height: 34px;
+  cursor: pointer;
+}
+button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.slider { flex: 1 1 140px; display: flex; align-items: center; gap: 8px; max-width: 420px; }
+input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; height: 28px; }
+.note { margin: 0; color: var(--muted); font-size: 12px; max-width: 75ch; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CT 3D 표면 보기</h1>
+  <div class="count" id="count"></div>
+</header>
+
+<div id="stage">
+  <div id="msg">
+    <span id="msgText">GLB 파일을 이 화면에 끌어다 놓거나 아래에서 고르세요.</span>
+    <label class="file" id="pick">파일 고르기<input type="file" id="file" accept=".glb" hidden></label>
+  </div>
+  <div id="sides" hidden><span>본인 오른쪽</span><span>본인 왼쪽</span></div>
+  <div id="legend" hidden>
+    <span><i style="background:#b9a57a"></i>뼈</span>
+    <span><i style="background:#f7f3e6"></i>치아</span>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="row" role="group" aria-label="보는 방향">
+    <span class="lab">방향</span>
+    <button type="button" data-view="front" aria-pressed="true">정면</button>
+    <button type="button" data-view="right" aria-pressed="false">오른쪽</button>
+    <button type="button" data-view="left" aria-pressed="false">왼쪽</button>
+    <button type="button" data-view="top" aria-pressed="false">위에서</button>
+    <button type="button" data-view="bottom" aria-pressed="false">아래에서</button>
+  </div>
+  <div class="row" role="group" aria-label="표시 항목">
+    <span class="lab">표시</span>
+    <button type="button" data-toggle="bone" aria-pressed="true">뼈</button>
+    <button type="button" data-toggle="teeth" aria-pressed="true">치아</button>
+  </div>
+  <div class="row">
+    <label class="lab" for="opacity">뼈 농도</label>
+    <div class="slider"><input type="range" id="opacity" min="5" max="100" step="5" value="55"></div>
+  </div>
+  <div class="row">
+    <label class="lab" for="cut">자르기</label>
+    <div class="slider"><input type="range" id="cut" min="0" max="100" step="1" value="0"></div>
+  </div>
+  <p class="note" id="note">CT 화소 값이 임계값을 넘는 부분의 표면입니다. 치아는 밝게 찍힌 머리 부분만 나오고, 뿌리는 턱뼈와 밝기가 비슷해 따로 나뉘지 않습니다. 설명용이며 진단 자료가 아닙니다. 좌우는 본인 기준입니다.</p>
+</div>
+
+<script id="glb-data" type="application/octet-stream">__GLB_BASE64__</script>
+<script id="mesh-info" type="application/json">__MESH_INFO__</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+(function () {
+  var stage = document.getElementById('stage');
+  var msg = document.getElementById('msg');
+  var msgText = document.getElementById('msgText');
+  var pick = document.getElementById('pick');
+
+  if (!window.THREE) {
+    msgText.textContent = '3D 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하고 다시 열어 주세요.';
+    pick.hidden = true;
+    return;
+  }
+
+  var renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  } catch (e) {
+    msgText.textContent = '이 기기에서는 3D 화면(WebGL)을 열 수 없습니다. 다른 브라우저나 기기에서 다시 열어 주세요.';
+    pick.hidden = true;
+    return;
+  }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.localClippingEnabled = true;
+  stage.insertBefore(renderer.domElement, stage.firstChild);
+
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(28, 1, 1, 4000);
+  scene.add(camera);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x5f6b6d, 0.5));
+  var key = new THREE.DirectionalLight(0xffffff, 0.6);
+  key.position.set(-0.4, 0.6, 1);   // 카메라에 붙여서 어느 방향에서 봐도 앞에서 비춘다
+  camera.add(key);
+
+  var controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.12;
+
+  // 자르기 평면: 얼굴 앞(+Z)에서부터 잘라 들어간다.
+  var cutPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1e6);
+  var mats = {
+    bone: new THREE.MeshStandardMaterial({ color: 0xb9a57a, roughness: 0.75, metalness: 0, side: THREE.DoubleSide, transparent: true, opacity: 0.55, depthWrite: false, clippingPlanes: [cutPlane] }),
+    teeth: new THREE.MeshStandardMaterial({ color: 0xf7f3e6, roughness: 0.35, metalness: 0, side: THREE.DoubleSide, clippingPlanes: [cutPlane] })
+  };
+  var parts = {};
+  var model = null, center = new THREE.Vector3(), fit = 60, zMin = -60, zMax = 60;
+  var dirty = true;
+
+  function resize() {
+    var w = stage.clientWidth, h = stage.clientHeight;
+    if (!w || !h) return;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    dirty = true;
+  }
+  window.addEventListener('resize', resize);
+  var sides = document.getElementById('sides');
+  var dir = new THREE.Vector3();
+  controls.addEventListener('change', function () {
+    dirty = true;
+    // 좌우 표시는 얼굴 앞쪽에서 볼 때만 맞으므로 그때만 보인다.
+    dir.copy(camera.position).sub(controls.target).normalize();
+    sides.hidden = !model || dir.z < 0.8;
+  });
+
+  var VIEWS = {
+    front:  [0, 0, 1],
+    right:  [-1, 0, 0],      // 본인 오른쪽에서 본다
+    left:   [1, 0, 0],
+    top:    [0, 1, 0.001],
+    bottom: [0, -1, 0.001]
+  };
+  function setView(name) {
+    var d = VIEWS[name];
+    // 세로로 긴 화면에서는 가로가 잘리지 않게 더 물러난다.
+    var dist = fit / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.2 / Math.min(1, camera.aspect);
+    camera.position.set(center.x + d[0] * dist, center.y + d[1] * dist, center.z + d[2] * dist);
+    controls.target.copy(center);
+    controls.update();
+    document.querySelectorAll('[data-view]').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-view') === name));
+    });
+    dirty = true;
+  }
+
+  function show(buffer) {
+    msgText.textContent = '불러오는 중입니다.';
+    pick.hidden = true;
+    msg.hidden = false;
+    new THREE.GLTFLoader().parse(buffer, '', function (gltf) {
+      if (model) scene.remove(model);
+      model = gltf.scene;
+      parts = {};
+      var tris = 0;
+      model.traverse(function (o) {
+        if (!o.isMesh) return;
+        var name = /teeth/i.test(o.name + ' ' + (o.parent ? o.parent.name : '')) ? 'teeth' : 'bone';
+        o.material = mats[name];
+        o.renderOrder = name === 'teeth' ? 0 : 1;   // 불투명한 치아를 먼저, 반투명한 뼈를 나중에
+        (parts[name] = parts[name] || []).push(o);
+        tris += o.geometry.index ? o.geometry.index.count / 3 : o.geometry.attributes.position.count / 3;
+      });
+      scene.add(model);
+
+      var box = new THREE.Box3().setFromObject(model);
+      var size = box.getSize(new THREE.Vector3());
+      box.getCenter(center);
+      fit = 0.5 * Math.max(size.x, size.y, size.z);
+      zMin = box.min.z; zMax = box.max.z;
+      camera.near = fit / 30; camera.far = fit * 40;
+      camera.updateProjectionMatrix();
+      applyCut();
+
+      var info = {};
+      try { info = JSON.parse(document.getElementById('mesh-info').textContent); } catch (e) {}
+      var bits = ['크기 ' + size.x.toFixed(0) + ' × ' + size.y.toFixed(0) + ' × ' + size.z.toFixed(0) + 'mm',
+                  '삼각형 ' + Math.round(tris / 1000) + '천 개'];
+      if (info.bone_threshold) bits.push('임계값 뼈 ' + info.bone_threshold + ', 치아 ' + info.teeth_threshold);
+      document.getElementById('count').textContent = bits.join(' · ');
+
+      msg.hidden = true;
+      document.getElementById('legend').hidden = false;
+      resize();
+      setView(VIEWS[start.view] ? start.view : 'front');
+    }, function () {
+      msgText.textContent = '이 파일을 읽지 못했습니다. GLB 파일이 맞는지 확인해 주세요.';
+      pick.hidden = false;
+    });
+  }
+
+  function applyCut() {
+    var t = Number(document.getElementById('cut').value) / 100;
+    cutPlane.constant = t === 0 ? 1e6 : zMax - t * (zMax - zMin);
+    dirty = true;
+  }
+  document.getElementById('cut').addEventListener('input', applyCut);
+
+  function applyOpacity() {
+    var v = Number(document.getElementById('opacity').value) / 100;
+    mats.bone.opacity = v;
+    mats.bone.transparent = v < 1;
+    mats.bone.depthWrite = v >= 1;
+    mats.bone.needsUpdate = true;
+    dirty = true;
+  }
+  document.getElementById('opacity').addEventListener('input', applyOpacity);
+
+  // 주소 끝에 #view=right&bone=100&cut=40 처럼 붙이면 그 상태로 열린다.
+  var start = {};
+  location.hash.replace(/^#/, '').split('&').forEach(function (kv) {
+    var p = kv.split('=');
+    if (p[0]) start[p[0]] = p[1];
+  });
+  if (start.bone) { document.getElementById('opacity').value = start.bone; applyOpacity(); }
+  if (start.cut) document.getElementById('cut').value = start.cut;
+
+  document.querySelectorAll('[data-view]').forEach(function (b) {
+    b.addEventListener('click', function () { if (model) setView(b.getAttribute('data-view')); });
+  });
+  document.querySelectorAll('[data-toggle]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var on = b.getAttribute('aria-pressed') !== 'true';
+      b.setAttribute('aria-pressed', String(on));
+      (parts[b.getAttribute('data-toggle')] || []).forEach(function (o) { o.visible = on; });
+      dirty = true;
+    });
+  });
+
+  // 파일을 직접 고르거나 끌어다 놓아 여는 경로. 파일은 이 브라우저 안에서만 읽는다.
+  function openFile(file) {
+    if (!file) return;
+    var r = new FileReader();
+    r.onload = function () { show(r.result); };
+    r.readAsArrayBuffer(file);
+  }
+  document.getElementById('file').addEventListener('change', function (e) { openFile(e.target.files[0]); });
+  stage.addEventListener('dragover', function (e) { e.preventDefault(); stage.classList.add('drag'); });
+  stage.addEventListener('dragleave', function () { stage.classList.remove('drag'); });
+  stage.addEventListener('drop', function (e) {
+    e.preventDefault();
+    stage.classList.remove('drag');
+    openFile(e.dataTransfer.files[0]);
+  });
+
+  // build_viewer.py가 넣어 준 데이터가 있으면 바로 연다.
+  var b64 = document.getElementById('glb-data').textContent.trim();
+  if (b64 && b64.indexOf('__GLB') !== 0) {
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    show(bytes.buffer);
+  }
+
+  resize();
+  (function loop() {
+    requestAnimationFrame(loop);
+    if (controls.update() || dirty) {
+      dirty = false;
+      renderer.render(scene, camera);
+    }
+  })();
+})();
+</script>
+</body>
+</html>

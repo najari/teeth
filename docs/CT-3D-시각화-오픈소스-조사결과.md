@@ -1,0 +1,273 @@
+# CT 데이터 3D 시각화 오픈소스 조사 결과
+
+작성일: 2026-11-28
+
+보유한 치과 CT(DICOM 425장)를 3D로 보여 줄 수 있는 오픈소스를 조사한 문서입니다. 데스크톱 프로그램, 웹 뷰어와 라이브러리, Python 라이브러리, 치아와 턱뼈 자동 분할 도구 순으로 정리했습니다.
+
+- 라이선스와 최근 커밋 날짜는 2026-11-28에 GitHub 저장소 정보를 조회한 값입니다.
+- "제 계산"이라고 표시한 값은 DICOM 헤더 값에서 직접 계산한 것입니다.
+- 1~9장은 문서와 저장소 설명을 근거로 정리한 조사 내용입니다. 10장은 보유 데이터로 실제 실행한 결과입니다.
+
+---
+
+## 1. 핵심 결론
+
+1. **바로 3D로 보려면 VolView가 가장 빠릅니다.** 설치 없이 브라우저에 DICOM 폴더를 끌어다 놓으면 되고, 데이터가 PC 밖으로 나가지 않는다고 밝히고 있습니다.
+2. **분석과 가공까지 하려면 3D Slicer가 기준입니다.** 볼륨 렌더링, 분할, 메시 내보내기를 한 프로그램에서 하고, 치과용 확장이 여기에 모여 있습니다.
+3. **치아와 턱뼈를 자동으로 나눠 주는 공개 모델이 있습니다.** DentalSegmentator는 5개 구조로 나누고, TotalSegmentator의 `teeth` 작업은 치아를 FDI 번호별로 나누며 임플란트, 크라운, 브리지 클래스도 있습니다.
+4. **웹에 넣는 방법은 두 가지입니다.** 분할한 표면 메시를 three.js로 띄우는 방법과, 볼륨 자체를 브라우저에서 렌더링하는 방법(vtk.js, Cornerstone3D, NiiVue, three.js 예제 셰이더)입니다.
+5. **이 프로젝트에는 메시 방법을 권합니다.** `index.html`이 이미 three.js 기반이고, 치아를 누르면 설명이 나오는 지금 구조에 치아별 메시가 그대로 맞습니다. 볼륨은 압축을 풀면 약 306MB라서 웹에 그대로 올리기 어렵습니다.
+6. **CT 원본과 거기서 만든 3D 형상은 개인 의료정보입니다.** 공개 저장소에 무엇까지 올릴지 먼저 정해야 합니다.
+
+---
+
+## 2. 보유 CT 데이터 규격
+
+첫 장, 가운데 장, 마지막 장의 DICOM 헤더를 읽은 결과입니다.
+
+| 항목 | 값 |
+|---|---|
+| 장비 | VATECH PHT-75CHS (치과용 콘빔 CT, 헤더의 Modality는 CT) |
+| 슬라이스 | 축방향 425장, 장당 600×600 |
+| 복셀 크기 | 0.2 × 0.2 × 0.2mm, 슬라이스 간격도 0.2mm |
+| 촬영 범위 | 120 × 120 × 85mm (제 계산) |
+| 화소 형식 | 16비트 부호 있는 정수, Rescale 기울기 1, 절편 0 |
+| 저장된 창 설정 | 중심 1500, 폭 5500 |
+| 관전압, 관전류 | 94kV, 12mA |
+| 압축 방식 | JPEG Lossless, Process 14 SV1 (전송 구문 1.2.840.10008.1.2.4.70) |
+| 용량 | 디스크에서 102MB, 압축을 풀면 약 306MB (제 계산) |
+
+**도구 선택에 미치는 영향**
+
+- **복셀이 정육면체입니다.** 세 방향 간격이 같아서 리샘플링 없이 바로 3D로 만들 수 있습니다.
+- **무손실 JPEG로 압축돼 있습니다.** 압축 DICOM을 풀지 못하는 단순한 파서로는 열리지 않습니다. Python의 pydicom은 pylibjpeg 같은 디코더를 따로 설치해야 화소를 읽습니다. 웹에 올릴 때는 NRRD나 NIfTI로 한 번 변환해 두면 브라우저 쪽 코드가 단순해집니다.
+- **웹에는 크기를 줄여야 합니다.** 2배로 줄이면 300×300×213, 복셀 0.4mm가 되고 용량은 16비트로 약 38MB, 8비트로 약 19MB입니다(제 계산).
+- **콘빔 CT의 화소 값은 일반 CT의 HU와 다릅니다.** 일반 CT용 뼈 프리셋이나 임계값이 그대로 맞지 않으므로 임계값을 직접 조정해야 합니다.
+- **지금 쓰는 하드웨어는 두 대입니다.** 작업 PC는 Intel 내장 그래픽에 RAM 16GB라서 변환, 임계값 분할, 보기에 씁니다. 옆 PC에 RTX 3060이 있어 6장의 AI 자동 분할은 거기서 돌립니다. RTX 4090은 나중에 적용합니다.
+
+---
+
+## 3. 데스크톱 프로그램
+
+| 프로그램 | 라이선스 | 3D 관련 기능 | 비고 |
+|---|---|---|---|
+| [3D Slicer](https://www.slicer.org/) | BSD 계열 자체 라이선스 ([원문](https://github.com/Slicer/Slicer/blob/main/License.txt)) | 볼륨 렌더링, 분할, 표면 메시 내보내기(STL, OBJ) | 안정판은 5.12 계열 ([출처](https://www.kitware.com/announcing-3d-slicer-5-12/)). 치과용 확장이 여럿 있음 (6장) |
+| [InVesalius 3](https://github.com/invesalius/invesalius3) | GPL-2.0 | DICOM 묶음에서 3D 재구성, STL·OBJ·PLY 내보내기 | 치과 스캐너 영상은 후처리가 더 필요하고 아말감 때문에 잡음이 많다고 매뉴얼에 적혀 있음 ([출처](https://invesalius.github.io/docs/user_guide/user_guide.html)) |
+| [Weasis](https://weasis.org/en/) | EPL-2.0 또는 Apache-2.0 ([출처](https://github.com/nroduit/Weasis)) | 프리셋이 있는 볼륨 렌더링, 사선 MPR, MIP | 보는 용도의 뷰어. Windows, macOS, Linux 지원 |
+
+**3D Slicer를 기준으로 삼는 이유**
+
+- 보기, 분할, 메시 내보내기가 한 프로그램 안에 있습니다.
+- 6장의 자동 분할 도구 다섯 개 가운데 네 개가 Slicer 확장으로 제공됩니다.
+- 저장소 활동이 활발합니다. 조회일 전날까지 커밋이 있었습니다.
+
+**InVesalius로 자기 치아 CT를 STL로 만든 사례**가 있습니다. 마스크 민감도를 조정하고 가장 큰 표면을 골라 STL로 내보냈는데, 표면에 혹 같은 돌기가 남아 MeshLab에서 다듬어야 했다고 합니다 ([출처](https://shkspr.mobi/blog/2024/06/3d-printing-my-teeth/)).
+
+**자세히 보지 않은 것**
+
+- [ITK-SNAP](https://github.com/pyushkevich/itksnap)(GPL-3.0), [MITK](https://github.com/MITK/MITK)(BSD-3-Clause), [ParaView](https://github.com/Kitware/ParaView)(BSD-3-Clause)도 CT 볼륨을 다루는 오픈소스입니다. 이번에 찾은 치과용 확장은 모두 Slicer용이어서 더 조사하지 않았습니다.
+- [Horos](https://github.com/horosproject/horos)(LGPL-3.0)는 macOS 전용이라 제외했습니다.
+
+---
+
+## 4. 웹 브라우저용 뷰어와 라이브러리
+
+| 도구 | 라이선스 | 성격 | DICOM 읽기 | 3D 표시 |
+|---|---|---|---|---|
+| [VolView](https://github.com/Kitware/VolView) | Apache-2.0 | 완성된 뷰어 앱 | 끌어다 놓기 | 시네마틱 볼륨 렌더링 3가지 모드 |
+| [OHIF Viewer](https://github.com/OHIF/Viewers) | MIT | 완성된 뷰어 앱 | Cornerstone3D 사용 | v3.8부터 3D 볼륨 렌더링과 "3D four up" 배치 ([출처](https://ohif.org/release-notes/3p8/)) |
+| [Cornerstone3D](https://github.com/cornerstonejs/cornerstone3D) | MIT | 라이브러리 | 포함 | 3D Viewport, 뼈·연조직 같은 프리셋 ([출처](https://www.cornerstonejs.org/docs/concepts/cornerstone-core/viewports/)) |
+| [vtk.js](https://github.com/Kitware/vtk-js) | BSD-3-Clause | 라이브러리 | 없음. itk-wasm으로 읽어서 넘김 | 볼륨 렌더링 |
+| [NiiVue](https://github.com/niivue/niivue) | BSD-2-Clause | 페이지에 넣는 뷰어 컴포넌트 | 플러그인이 NIfTI로 변환 | 볼륨과 메시를 함께 3D로 표시 |
+| [three.js 볼륨 예제](https://threejs.org/examples/#webgl_texture3d) | MIT | 예제 코드 | 없음. NRRD를 읽음 | MIP, 등가면 |
+| [AMI](https://github.com/FNNDSC/ami) | MIT | three.js 기반 라이브러리 | 포함 | 2022-12 이후 커밋이 없어 제외 |
+
+### 4.1 VolView
+
+- Kitware가 만든 브라우저용 방사선 뷰어입니다. [volview.kitware.app](https://volview.kitware.app/)에서 바로 쓸 수 있습니다.
+- DICOM을 끌어다 놓으면 2D 단면과 3D 볼륨 렌더링이 같이 나옵니다. 칠하기, 재기, 자르기 도구가 있습니다 ([출처](https://github.com/Kitware/VolView)).
+- README에 "불러온 데이터는 사용자의 기기를 떠나지 않는다"고 적혀 있습니다.
+- 렌더링에 로컬 GPU를 쓰고, GPU가 없어도 조금 느리지만 같은 품질로 그린다고 합니다 ([출처](https://kitware.github.io/VolView)).
+- vtk.js와 itk-wasm 위에 만들어졌습니다.
+
+### 4.2 OHIF와 Cornerstone3D
+
+- OHIF는 병원 영상 서버(PACS)와 연결해 쓰는 뷰어이고, Cornerstone3D는 그 렌더링 엔진입니다.
+- 서버 없이 로컬 파일 몇 개만 3D로 보려는 용도에는 구성이 큽니다. 직접 뷰어를 만들 때 Cornerstone3D를 라이브러리로 쓰는 쪽이 맞습니다.
+
+### 4.3 vtk.js와 itk-wasm
+
+- vtk.js에는 DICOM 리더가 없습니다. itk-wasm의 `readImageDICOMFileSeries`로 읽고 `convertItkToVtkImage`로 바꿔서 넘기는 것이 일반적인 방법입니다 ([출처](https://discourse.itk.org/t/how-to-read-series-of-dicom-images-into-django-using-itk-js-for-web-volume-rendering-using-vtk-js/4420)).
+- vtk.js의 [VolumeViewer 예제](https://kitware.github.io/vtk-js/examples/VolumeViewer.html)는 서버 없이 HTML 파일 하나로 동작하지만 DICOM이 아니라 VTI 파일을 읽습니다.
+- itk-wasm(Apache-2.0)은 웹팩 프로젝트에서 WASM 자산 설정을 따로 해 줘야 합니다.
+
+### 4.4 NiiVue
+
+- WebGL 2 기반 뷰어이고 볼륨과 메시 형식 30여 종을 읽습니다.
+- DICOM은 `@niivue/dicom-loader` 플러그인이 dcm2niix의 WASM 빌드로 NIfTI로 바꿔서 읽습니다. 로더를 등록하면 DICOM 폴더 끌어다 놓기가 됩니다 ([출처](https://unpkg.com/@niivue/dicom-loader@1.0.0/README.md)).
+- 지금 저장소는 예전 API이고 2027-01-15에 읽기 전용으로 보관될 예정입니다. 개발은 `niivue/mono` 저장소로 옮겨졌습니다. 새로 시작한다면 새 API를 기준으로 해야 합니다.
+
+### 4.5 three.js 볼륨 예제
+
+- three.js 공식 예제 `webgl_texture3d`가 볼륨 렌더링 예제입니다. `NRRDLoader`로 NRRD 파일을 읽고 `VolumeRenderShader1` 셰이더로 그립니다. 표시 방식은 MIP와 등가면 두 가지이고 등가면 임계값 슬라이더가 있습니다 ([소스](https://github.com/mrdoob/three.js/blob/dev/examples/webgl_texture3d.html)).
+- 이 프로젝트의 `index.html`이 three.js를 쓰므로 추가 라이브러리 없이 붙일 수 있는 유일한 볼륨 렌더링 방법입니다. 대신 CT를 NRRD로 변환하고 크기를 줄이는 작업을 미리 해야 합니다.
+
+---
+
+## 5. Python 라이브러리
+
+스크립트로 자동 처리하거나 변환할 때 쓰는 도구입니다.
+
+| 용도 | 도구 | 라이선스 | 내용 |
+|---|---|---|---|
+| 3D 표시 | [PyVista](https://github.com/pyvista/pyvista) | MIT | `add_volume`으로 볼륨 렌더링. 불투명도 전달 함수와 음영 옵션 지원 ([출처](https://docs.pyvista.org/examples/02-plot/volume)) |
+| 3D 표시 | [vedo](https://github.com/marcomusy/vedo) | MIT | VTK와 NumPy 기반 3D 분석·표시 모듈 |
+| 3D 표시 | [napari](https://github.com/napari/napari) | BSD-3-Clause | 다차원 영상 뷰어 |
+| DICOM 읽기 | [pydicom](https://github.com/pydicom/pydicom) | MIT 계열 | 헤더와 화소 읽기. 이 데이터의 무손실 JPEG는 디코더 추가 설치 필요 |
+| DICOM 읽기 | [SimpleITK](https://github.com/SimpleITK/SimpleITK) | Apache-2.0 | DICOM 묶음을 하나의 볼륨으로 읽기 |
+| 형식 변환 | [dcm2niix](https://github.com/rordenlab/dcm2niix) | BSD 계열 | DICOM을 NIfTI로 변환. 자동 분할 도구의 입력 형식 |
+
+PyVista 공식 예제는 DICOM 폴더가 아니라 내장 CT 데이터를 읽습니다. DICOM을 읽는 단계는 pydicom이나 SimpleITK로 따로 만들어야 합니다.
+
+---
+
+## 6. 치아와 턱뼈 자동 분할 도구
+
+CT를 3D로 "보는" 것에서 치아와 뼈를 따로 "떼어 내는" 것으로 넘어가려면 분할이 필요합니다. 공개된 사전 학습 모델은 다음과 같습니다.
+
+| 도구 | 나누는 대상 | 실행 방식 | 라이선스 | 최근 커밋 |
+|---|---|---|---|---|
+| [DentalSegmentator](https://github.com/gaudot/SlicerDentalSegmentator) | 5개: 위턱과 두개골 상부, 아래턱, 위 치아, 아래 치아, 하악관 | Slicer 확장 (5.8.0 이상) | 저장소의 LICENSE.txt 확인 필요 | 2026-11 |
+| [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) `teeth` | 77개: 치아 32개(FDI 번호별), 치수 32개, 위아래 턱뼈, 하치조신경관, 상악동, 임플란트, 크라운, 브리지 등 | `pip` 설치 후 명령줄, 또는 Slicer 확장 | Apache-2.0 | 2026-11 |
+| TotalSegmentator `craniofacial_structures` | 7개: 아래턱, 위 치아, 아래 치아, 두개골, 머리, 상악동, 전두동 | 위와 같음 | Apache-2.0 | 2026-11 |
+| [ToothSeg](https://github.com/MIC-DKFZ/ToothSeg) | 치아 하나하나와 번호 | nnU-Net 스크립트 여러 단계 | 코드 Apache-2.0 | 2026-05 |
+| [Slicer Automated Dental Tools](https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalTools) (AMASSS) | 두개안면 구조 | Slicer 확장 | 확인 필요 | 2026-11 |
+| [SlicerCBCTToothSegmentation](https://github.com/KitwareMedical/SlicerCBCTToothSegmentation) | 사용자가 상자로 지정한 치아 하나씩 | Slicer 확장 | Apache-2.0 | 2024-10 |
+
+### 6.1 DentalSegmentator
+
+- CT와 콘빔 CT 470건으로 학습하고 7개 기관의 256건으로 평가했습니다 ([출처](https://github.com/gaudot/SlicerDentalSegmentator)). 내부 시험 133건의 평균 Dice는 92.2 ± 6.3%입니다 ([출처](https://medrxiv.org/content/10.1101/2024.03.18.24304458v2)).
+- Slicer의 확장 관리자에서 설치하고 버튼 하나로 실행합니다. 결과를 Segment Editor에서 다듬고 내보내기 메뉴로 저장합니다.
+- **치아를 하나씩 나누지는 않습니다.** 위 치아 전체와 아래 치아 전체가 각각 한 덩어리입니다 ([출처](https://www.kitware.com/dental-segmentator/)).
+- CUDA GPU가 있으면 추론이 빨라집니다. 없으면 CPU로 돌고 "훨씬 오래 걸린다"고만 적혀 있습니다. 시간 수치는 없습니다. Linux와 WSL에서는 RAM 32GB 이상을 권장합니다.
+- Windows에서 CUDA용 PyTorch 설치가 꼬이는 경우의 해결 방법이 README의 문제 해결 항목에 있습니다.
+- 모델 가중치는 첫 실행 때 자동으로 받아지고, 명령줄용은 Zenodo에 있습니다 ([출처](https://zenodo.org/doi/10.5281/zenodo.10829674)).
+
+### 6.2 TotalSegmentator의 치아 작업
+
+- `teeth`와 `craniofacial_structures`는 README에서 "어떤 용도로든 공개(Apache-2.0)" 묶음에 들어 있습니다. 라이선스 키가 필요한 작업이 아닙니다.
+- `teeth`는 ToothFairy3 데이터셋을 기반으로 합니다. ToothFairy3는 콘빔 CT 532건에 77개 클래스를 표시한 데이터셋입니다 ([출처](https://ditto.ing.unimore.it/toothfairy3)).
+- 치아를 FDI 번호별로 나누므로 이 프로젝트의 "치아를 누르면 설명" 구조와 가장 잘 맞습니다. 임플란트, 크라운, 브리지 클래스가 따로 있는 것도 장점입니다.
+- 설치와 실행은 다음과 같습니다. 입력은 NIfTI라서 dcm2niix로 먼저 변환합니다.
+
+```
+pip install TotalSegmentator
+TotalSegmentator -i ct.nii.gz -o segmentations -ta teeth
+```
+
+- Slicer 안에서 쓰려면 [SlicerTotalSegmentator](https://github.com/lassoan/SlicerTotalSegmentator) 확장(Apache-2.0)이 있습니다.
+
+### 6.3 ToothSeg
+
+- 독일 암연구센터(DKFZ)가 공개한 치아 개별 분할과 번호 매기기 모델입니다. 논문은 2025년 IEEE Journal of Biomedical and Health Informatics에 실렸습니다 ([출처](https://github.com/MIC-DKFZ/ToothSeg)).
+- ToothFairy2로 학습한 가중치가 Zenodo에 있습니다 ([출처](https://zenodo.org/records/14893540)).
+- 명령 하나로 끝나지 않습니다. nnU-Net 추론 뒤에 후처리 스크립트를 여러 개 돌려야 해서 셋 중 쓰기가 가장 번거롭습니다.
+
+### 6.4 나머지 둘
+
+- **Slicer Automated Dental Tools:** 입력이 방향을 맞춘 콘빔 CT여야 하고 형식은 `.nii`, `.nrrd`, `.gipl`입니다. 교정과 악안면 분석용 기능(표지점 자동 찾기 등)이 같이 들어 있습니다.
+- **SlicerCBCTToothSegmentation:** 치아 하나마다 상자를 그려 주고 실행하는 방식입니다. 2년 넘게 커밋이 없습니다.
+
+---
+
+## 7. 이 프로젝트에 적용하는 방법
+
+### 7.1 세 가지 경로
+
+| | A. 그냥 보기 | B. 메시로 만들어 `index.html`에 넣기 | C. 볼륨을 웹에서 렌더링 |
+|---|---|---|---|
+| 쓰는 도구 | VolView 또는 3D Slicer | Slicer + 자동 분할 → three.js | three.js 예제 셰이더, NiiVue, vtk.js 중 하나 |
+| 준비 작업 | 없음 | 분할, 다듬기, 메시 줄이기 | 형식 변환과 크기 줄이기 |
+| 웹에 올릴 파일 | 없음 | 메시 파일 (크기는 만들어 봐야 앎) | 볼륨 약 19~38MB (제 계산) |
+| 치아별 선택 | 안 됨 | 됨 | 안 됨 |
+| 뼈 속과 치아 뿌리 | 보임 | 분할한 표면만 | 보임 |
+| 지금 코드와의 거리 | 무관 | 가까움 | 셰이더와 로더 추가 |
+
+### 7.2 권장 순서
+
+1. **VolView로 먼저 열어 봅니다.** 데이터가 제대로 열리는지와 영상 품질을 확인하는 단계입니다. 무손실 JPEG 압축이 문제없이 풀리는지도 여기서 확인됩니다.
+2. **RTX 3060 PC에서 TotalSegmentator `teeth`를 돌립니다.** 실행 스크립트는 `tools/ct3d`에 있습니다(10장). 결과가 좋지 않으면 3D Slicer의 DentalSegmentator로 턱뼈와 치아 덩어리를 얻어 비교합니다.
+3. **Segment Editor에서 다듬습니다.** 금속 주변의 번짐과 서로 붙은 치아를 손으로 정리합니다.
+4. **STL이나 OBJ로 내보내고 삼각형 수를 줄입니다.** Blender에서 줄인 뒤 GLB로 저장하면 three.js의 `GLTFLoader`로 읽을 수 있습니다.
+5. **`index.html`의 표준형 치아를 실제 메시로 바꿉니다.** 치아별 메시 이름을 FDI 번호로 두면 지금의 클릭 설명 구조를 그대로 쓸 수 있습니다.
+
+경로 C는 뼈 속까지 보여 주는 별도 보기 모드가 필요해질 때 추가합니다.
+
+---
+
+## 8. 주의할 점
+
+- **개인정보:** DICOM 헤더에는 이름과 생년월일 같은 식별 정보가 들어 있습니다. NIfTI, NRRD, STL로 바꾸면 헤더 정보는 대부분 빠지지만 얼굴뼈와 치열 형상 자체가 개인 의료정보입니다. 공개 저장소에는 원본 CT를 올리지 않고, 메시를 올릴지도 따로 판단해야 합니다.
+- **외부 서비스:** 자동 분할을 온라인 서비스나 클라우드 GPU에서 돌리면 CT가 외부로 전송됩니다. 옆 PC의 RTX 3060으로 돌리므로 그럴 필요가 없고, 이 문서의 경로는 모두 PC 안에서 처리하는 것을 전제로 했습니다.
+- **진단용이 아닙니다.** VolView는 어떤 용도로도 FDA 승인을 받지 않았다고 밝히고 있습니다 ([출처](https://kitware.github.io/VolView)). 여기 나온 도구로 만든 결과는 설명과 검토용입니다.
+- **금속 인공물:** 임플란트와 금속 보철 주변은 영상이 번져서 자동 분할이 틀리기 쉽습니다. 손으로 다듬는 단계를 건너뛸 수 없습니다.
+- **GPL 라이선스:** InVesalius(GPL-2.0)와 ITK-SNAP(GPL-3.0)은 프로그램으로 쓰는 데는 제약이 없습니다. 코드를 가져다 넣은 프로그램을 배포할 때만 조건이 붙습니다.
+- **모델 가중치의 라이선스:** 코드와 가중치의 라이선스가 다를 수 있습니다. 상업적으로 쓸 계획이 있으면 가중치와 학습 데이터셋의 조건을 따로 확인해야 합니다.
+
+---
+
+## 9. 확인하지 못한 부분
+
+- **실제 실행 결과:** 10장에 적은 것 말고는 보유 데이터로 돌려 보지 않았습니다. VolView, 3D Slicer 같은 뷰어에서 무손실 JPEG 파일이 열리는지, RTX 3060에서 자동 분할이 얼마나 걸리는지는 해 봐야 압니다.
+- **TotalSegmentator `teeth`의 콘빔 CT 성능:** README는 CT용 작업이라고만 적고 있습니다. 학습 데이터가 콘빔 CT라는 점에서 맞을 것으로 보이지만 정확도 수치는 찾지 못했습니다.
+- **라이선스 종류:** DentalSegmentator와 Slicer Automated Dental Tools는 저장소에 라이선스 파일이 있지만 종류가 자동으로 식별되지 않았습니다. ToothSeg와 DentalSegmentator 가중치의 라이선스도 확인하지 못했습니다.
+- **3D Slicer의 최신 패치 버전:** 5.12.4(2026-09)로 보이지만 그 뒤에 새 버전이 나왔는지는 확인하지 못했습니다.
+- **OHIF에서 로컬 파일을 3D로 여는 방법:** 문서에서 찾지 못했습니다.
+- **NiiVue 새 API에서의 DICOM 로더 사용법:** 예전 저장소의 설명만 확인했습니다.
+- **메시 파일 크기:** 삼각형 수를 얼마나 줄일 수 있는지는 분할 결과를 봐야 정할 수 있습니다.
+
+---
+
+## 10. 실행 결과 (2026-11-28)
+
+작업 PC(Intel i5-1240P, 내장 그래픽, RAM 16GB)에서 GPU 없이 실행한 결과입니다. 스크립트는 저장소의 [`tools/ct3d`](../tools/ct3d/)에 있습니다. 결과물에는 환자의 형상이 들어 있어 저장소 밖(`data/derived`)에 두었습니다.
+
+### 10.1 한 일
+
+| 단계 | 쓴 오픈소스 | 결과 |
+|---|---|---|
+| DICOM 읽기 | SimpleITK | 무손실 JPEG 425장이 디코더를 따로 설치하지 않고 읽혔음. 600×600×425 볼륨으로 합쳐 `ct.nii.gz`(127MB)로 저장 |
+| 표면 뽑기 | VTK(PyVista), trimesh | 뼈와 치아 메시 두 개, 삼각형 40만 개, GLB 9.6MB. 43초 걸림 |
+| 뷰어 | three.js r128 | 파일 하나로 열리는 `ct_viewer.html`(12.8MB). 헤드리스 Chrome으로 화면을 캡처해 확인 |
+
+뷰어는 `index.html`과 같은 three.js 버전과 같은 화면 구성을 씁니다. 보는 방향 5가지, 뼈와 치아 켜고 끄기, 뼈 농도 조절, 앞에서부터 잘라 보기가 됩니다.
+
+### 10.2 화소 값 분포와 임계값
+
+| 구간 | 해당하는 것 |
+|---|---|
+| -1000 | 공기 |
+| 0~300 (봉우리 100~200) | 연조직 |
+| 600~1500 | 해면골 |
+| 2000~2900 (봉우리 2100) | 치아 상아질과 턱뼈 겉면의 치밀골이 겹침 |
+| 3000 이상 (최대 6127) | 법랑질 |
+
+구간별 해석은 단면 그림과 대조해서 붙인 것입니다. 이 값을 보고 정한 임계값은 뼈 1000, 치아 2800, 법랑질 3300입니다.
+
+### 10.3 확인된 한계
+
+- **임계값으로는 치아 뿌리와 턱뼈를 나눌 수 없습니다.** 치아 임계값을 2550과 2300으로 낮춰 보니 뿌리가 더 나오는 대신 턱뼈 겉면이 통째로 치아로 잡혔습니다. 상아질과 치밀골의 밝기가 같은 구간에 있기 때문입니다.
+- **2800에서도 턱 아래쪽 치밀골 일부가 치아로 잡혔습니다.** 법랑질 밝기의 화소가 충분히 들어 있는 덩어리만 치아로 인정하는 조건을 넣어 걸러 냈습니다.
+- **치아 메시에는 머리 부분만 들어 있습니다.** 뿌리와 뿌리만 남은 치아는 뼈 메시에 섞여 있습니다.
+- **치아가 하나씩 나뉘지 않았습니다.** 치아 메시는 13덩어리이고, 서로 닿은 치아는 한 덩어리입니다.
+
+이 네 가지가 6장의 AI 자동 분할이 필요한 이유입니다.
+
+### 10.4 다음 단계: RTX 3060 PC에서 자동 분할
+
+옮길 것은 `ct.nii.gz`와 스크립트 세 개(`setup_segmentation.py`, `segment_teeth.py`, `run_on_gpu_pc.bat`)입니다. `ct.nii.gz`에는 형상과 화소 값만 있고 이름 같은 식별 정보는 없습니다.
+
+1. 네 파일을 한 폴더에 넣어 RTX 3060 PC로 옮깁니다.
+2. `run_on_gpu_pc.bat`을 실행합니다. CUDA용 PyTorch와 TotalSegmentator를 설치하고 `teeth` 작업을 돌립니다.
+3. 생긴 `teeth_seg` 폴더를 작업 PC로 가져옵니다.
+4. 작업 PC에서 치아별 메시로 바꿔 뷰어와 `index.html`에 넣습니다.
