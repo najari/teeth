@@ -4,10 +4,12 @@
 //! 웹 뷰어(viewer_template.html)와 같은 조작을 한다: 보는 방향, 종류별 켜고 끄기, 뼈 농도, 자르기, 누르면 이름.
 //!
 //! 사용법:
-//!     ct3d-viewer [파일.glb] [--view front|right|left|top|bottom] [--hide jaw,sinus]
-//!                 [--bone 0..100] [--cut 0..100] [--pick 구조이름] [--screenshot 저장.png]
-//! 파일은 창에 끌어다 놓아도 열린다. --screenshot을 주면 화면을 PNG로 저장하고 닫는다(확인용).
+//!     ct3d-viewer [파일.glb | DICOM 폴더] [--view front|right|left|top|bottom] [--hide jaw,sinus]
+//!                 [--bone 0..100] [--cut 0..100] [--pick 구조이름] [--export 저장.glb] [--screenshot 저장.png]
+//! DICOM 폴더를 주면 뼈와 치아 표면을 그 자리에서 만든다(tools/ct3d/volume_to_mesh.py와 같은 순서).
+//! 파일이나 폴더는 창에 끌어다 놓아도 열린다. --screenshot을 주면 화면을 PNG로 저장하고 닫는다(확인용).
 
+mod ctproc;
 mod render;
 mod scene;
 
@@ -35,7 +37,10 @@ struct Args {
     pick: Option<String>,
     screenshot: Option<PathBuf>,
     click: Option<(f32, f32)>, // 3D 화면 안의 비율 좌표(0..1)를 누른 것처럼 한다 (확인용)
+    export: Option<PathBuf>,   // DICOM에서 만든 메시를 GLB로 저장
 }
+
+type Job = std::sync::mpsc::Receiver<Result<Vec<Part>, String>>;
 
 fn parse_args() -> Args {
     let mut a = Args::default();
@@ -48,6 +53,7 @@ fn parse_args() -> Args {
             "--cut" => a.cut = it.next().and_then(|v| v.parse().ok()),
             "--pick" => a.pick = it.next(),
             "--screenshot" => a.screenshot = it.next().map(PathBuf::from),
+            "--export" => a.export = it.next().map(PathBuf::from),
             "--click" => {
                 a.click = it.next().and_then(|v| {
                     let (x, y) = v.split_once(',')?;
@@ -84,6 +90,9 @@ struct App {
     closing: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pending_pick: Option<String>,
     pending_click: Option<(f32, f32)>,
+    export: Option<PathBuf>,
+    job: Option<Job>,
+    progress: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     frames: u32,
     bench_start: Option<std::time::Instant>,
 }
@@ -116,6 +125,9 @@ impl App {
             closing: Default::default(),
             pending_pick: args.pick,
             pending_click: args.click,
+            export: args.export,
+            job: None,
+            progress: Default::default(),
             frames: 0,
             bench_start: None,
         };
@@ -137,7 +149,29 @@ impl App {
     }
 
     fn open(&mut self, path: PathBuf) {
-        match scene::load_glb(&path) {
+        self.file_name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        if path.is_dir() {
+            // DICOM 폴더: 시간이 걸리므로 따로 돌리고, 진행 상황은 화면에 보여 준다
+            let (tx, rx) = std::sync::mpsc::channel();
+            let progress = self.progress.clone();
+            progress.lock().unwrap().clear();
+            self.message = "CT를 읽는 중입니다.".into();
+            std::thread::spawn(move || {
+                let log = move |s: String| {
+                    println!("{s}");
+                    progress.lock().unwrap().push(s);
+                };
+                let _ = tx.send(ctproc::threshold_meshes(&path, &ctproc::Params::default(), &log));
+            });
+            self.job = Some(rx);
+            return;
+        }
+        let result = scene::load_glb(&path);
+        self.set_parts(result);
+    }
+
+    fn set_parts(&mut self, result: Result<Vec<Part>, String>) {
+        match result {
             Ok(parts) => {
                 let (min, max) = parts.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), p| (a.min(p.min), b.max(p.max)));
                 self.target = (min + max) * 0.5;
@@ -147,13 +181,22 @@ impl App {
                 if let Some(r) = self.renderer.as_mut() {
                     r.upload(&parts);
                 }
+                if let Some(path) = self.export.take() {
+                    match ctproc::write_glb(&parts, &path) {
+                        Ok(()) => println!("저장: {}", path.display()),
+                        Err(e) => println!("GLB를 저장하지 못했습니다: {e}"),
+                    }
+                }
                 self.parts = parts;
                 self.picked = self.pending_pick.take().and_then(|n| self.parts.iter().position(|p| p.name == n));
-                self.file_name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 self.message.clear();
-                self.set_view(0);
+                let view = VIEWS.iter().position(|v| v.0 == self.view_name).unwrap_or(0);
+                self.set_view(view);
             }
-            Err(e) => self.message = e,
+            Err(e) => {
+                println!("{e}");
+                self.message = e;
+            }
         }
     }
 
@@ -231,7 +274,17 @@ fn swatch(ui: &mut egui::Ui, color: [u8; 3], text: &str) {
 impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &root.ctx().clone();
-        self.frames += 1;
+        if let Some(result) = self.job.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.job = None;
+            self.set_parts(result);
+        }
+        if self.job.is_some() {
+            let lines = self.progress.lock().unwrap();
+            self.message = std::iter::once("CT를 처리하는 중입니다.".to_string()).chain(lines.iter().cloned()).collect::<Vec<_>>().join("\n");
+        }
+        if !self.parts.is_empty() {
+            self.frames += 1; // 확인용 프레임 수는 장면이 생긴 뒤부터 센다
+        }
         if self.closing.load(std::sync::atomic::Ordering::Relaxed) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
