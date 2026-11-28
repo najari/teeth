@@ -383,6 +383,13 @@ pub(crate) fn to_part(name: &str, m: Mesh, centre: Vec3) -> Part {
     Part { name: name.into(), kind: kind_of(name), positions: pos, normals: nrm, indices: m.idx, min, max, volume_mm3: None }
 }
 
+/// 이미 뷰어 좌표인 메시로 Part를 만든다 (구강 스캔 등)
+pub(crate) fn view_part(name: &str, pos: Vec<Vec3>, idx: Vec<u32>) -> Part {
+    let nrm = normals(&pos, &idx);
+    let (min, max) = pos.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), p| (a.min(*p), b.max(*p)));
+    Part { name: name.into(), kind: kind_of(name), positions: pos, normals: nrm, indices: idx, min, max, volume_mm3: None }
+}
+
 /// 큰 덩어리만 남기고 나머지의 밝은 칸은 공기로 바꾼다
 fn keep_components(v: &mut Volume, level: f32, keep_largest: usize, min_voxels: usize) -> usize {
     let mask: Vec<bool> = v.data.iter().map(|&x| x > level).collect();

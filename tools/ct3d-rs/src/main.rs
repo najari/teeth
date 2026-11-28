@@ -22,6 +22,8 @@ mod render;
 mod scene;
 #[cfg(not(target_arch = "wasm32"))]
 mod seg;
+#[cfg(not(target_arch = "wasm32"))]
+mod scan;
 
 use eframe::egui::{self, Color32, RichText, Sense, Vec2};
 use glam::Vec3;
@@ -54,6 +56,7 @@ struct Args {
     seg: Option<PathBuf>,      // segment_teeth.py의 출력 폴더
     assign: std::collections::HashMap<usize, u32>, // 뿌리 조각 후보 번호 → FDI 번호
     ai_jaws: bool,
+    scan: Option<PathBuf>,     // 구강 스캔 폴더(UpperJaw, LowerJaw STL)
     model_js: Option<PathBuf>, // 치열 모형용 ct-teeth.js를 만들고 끝낸다
     remap: std::collections::HashMap<u32, u32>, // 분할 번호 → 모형 번호
 }
@@ -76,6 +79,7 @@ struct SegOptions {
     dir: PathBuf,
     assign: std::collections::HashMap<usize, u32>,
     ai_jaws: bool,
+    scan: Option<PathBuf>,
 }
 
 type Job = std::sync::mpsc::Receiver<Result<Vec<Part>, String>>;
@@ -95,6 +99,7 @@ fn parse_args() -> Args {
             "--export" => a.export = it.next().map(PathBuf::from),
             "--seg" => a.seg = it.next().map(PathBuf::from),
             "--ai-jaws" => a.ai_jaws = true,
+            "--scan" => a.scan = it.next().map(PathBuf::from),
             "--assign" => a.assign = pairs(it.next()),
             "--remap" => a.remap = pairs(it.next()),
             "--model-js" => a.model_js = it.next().map(PathBuf::from),
@@ -183,7 +188,7 @@ impl App {
             pending_wheel: args.wheel,
             scene_rect: None,
             export: args.export,
-            seg: args.seg.map(|dir| SegOptions { dir, assign: args.assign, ai_jaws: args.ai_jaws }),
+            seg: args.seg.map(|dir| SegOptions { dir, assign: args.assign, ai_jaws: args.ai_jaws, scan: args.scan }),
             job: None,
             progress: Default::default(),
             frames: 0,
@@ -319,7 +324,29 @@ impl App {
 #[cfg(not(target_arch = "wasm32"))]
 fn segmented_meshes(dicom: &std::path::Path, o: &SegOptions, log: ctproc::Log) -> Result<Vec<Part>, String> {
     let (ct, s, cands) = load_segmentation(dicom, o, log)?;
-    Ok(seg::part_meshes(&ct, &s, &cands, o.ai_jaws, log))
+    let mut parts = seg::part_meshes(&ct, &s, &cands, o.ai_jaws, log);
+    if let Some(dir) = &o.scan {
+        parts.extend(scan_parts(dir, &parts, log)?);
+    }
+    Ok(parts)
+}
+
+/// 구강 스캔을 CT 치아(뷰어 좌표)에 맞춰 upper_scan, lower_scan으로 만든다 (scan_to_ct.py와 같은 순서)
+#[cfg(not(target_arch = "wasm32"))]
+fn scan_parts(dir: &std::path::Path, parts: &[Part], log: ctproc::Log) -> Result<Vec<Part>, String> {
+    let teeth: Vec<(u32, Vec<glam::DVec3>)> = parts
+        .iter()
+        .filter(|p| KINDS[p.kind].key == "tooth")
+        .filter_map(|p| Some((seg::fdi_of(&p.name)?, p.positions.iter().map(|v| v.as_dvec3()).collect())))
+        .collect();
+    let scans = scan::load_and_register(dir, &teeth, log)?;
+    let mut out = Vec::new();
+    for ((surface, _), name) in scans.into_iter().zip(["upper_scan", "lower_scan"]) {
+        let mesh = ctproc::Mesh { pos: surface.pos.iter().map(|p| p.as_vec3()).collect(), idx: surface.faces.iter().flatten().copied().collect() };
+        let m = ctproc::simplify(&mesh, 150_000);
+        out.push(ctproc::view_part(name, m.pos, m.idx));
+    }
+    Ok(out)
 }
 
 /// DICOM과 AI 분할 결과를 읽고 뿌리 조각 후보를 찾는다
@@ -349,9 +376,9 @@ fn model_js(args: &Args, out: &std::path::Path) -> Result<(), String> {
         return Err("--model-js에는 DICOM 폴더와 --seg 분할폴더가 필요합니다".into());
     };
     let log = |s: String| println!("{s}");
-    let o = SegOptions { dir, assign: args.assign.clone(), ai_jaws: args.ai_jaws };
+    let o = SegOptions { dir, assign: args.assign.clone(), ai_jaws: args.ai_jaws, scan: None };
     let (ct, s, cands) = load_segmentation(dicom, &o, &log)?;
-    let opts = model::Options { remap: args.remap.clone(), ..Default::default() };
+    let opts = model::Options { remap: args.remap.clone(), scan: args.scan.clone(), ..Default::default() };
     model::write_model_js(&ct, &s, &cands, &opts, out, &log)
 }
 

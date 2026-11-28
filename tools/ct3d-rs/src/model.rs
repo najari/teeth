@@ -11,7 +11,8 @@
 //!
 //! 출력 파일에는 환자의 CT에서 뽑은 치아 모양이 들어 있다. 공개할지는 따로 정한다.
 
-use crate::ctproc::{Log, Volume};
+use crate::ctproc::{self, Log, Volume};
+use crate::scan;
 use crate::seg::{self, Candidate, Seg};
 use glam::{DMat3, DVec3};
 use rayon::prelude::*;
@@ -35,11 +36,12 @@ pub struct Options {
     pub remap: HashMap<u32, u32>, // 분할 번호 → 모형 번호 (예: 42 → 41)
     pub enamel: f32,              // 법랑질로 보는 밝기. 치아 목 높이를 정하는 데 쓴다
     pub tris: usize,              // 치아 하나의 삼각형 수
+    pub scan: Option<std::path::PathBuf>, // 구강 스캔 폴더(UpperJaw, LowerJaw STL). 있으면 치아 머리를 다듬고 잇몸을 넣는다
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { remap: HashMap::new(), enamel: 3300.0, tris: 2600 }
+        Self { remap: HashMap::new(), enamel: 3300.0, tris: 2600, scan: None }
     }
 }
 
@@ -337,12 +339,60 @@ fn num(v: f64) -> String {
 
 struct Shape {
     fdi: u32,
-    record: String,  // ct-teeth.js의 치아 하나 (pos, axes 앞까지)
     neck: DVec3,     // CT 쪽 모형 방향 좌표
     tip: DVec3,
     axes: DMat3,     // 열이 자기 좌표의 x, y, z축
     remnant: bool,
-    line: String,
+    from: u32,       // 분할 결과의 번호
+    c: DVec3,        // 자기 좌표의 기준점(치아 칸의 가운데)
+    offset: DVec3,   // 자기 좌표에서 치아 목
+    whole: Vec<DVec3>,              // 자기 좌표의 치아 전체 꼭짓점 (뿌리 조각의 폭에 씀)
+    crown: (Vec<DVec3>, Vec<[u32; 3]>),
+    root: (Vec<DVec3>, Vec<[u32; 3]>),
+    clamped: f64,
+    length: f64,
+    basis: String,
+    surface: Vec<DVec3>,            // CT 쪽 모형 방향 좌표의 치아 표면 (스캔 정합과 잇몸 가르기에 씀)
+    scan_note: String,
+}
+
+impl Shape {
+    fn world(&self, l: DVec3) -> DVec3 {
+        self.c + self.axes * (l + self.offset)
+    }
+    fn local(&self, w: DVec3) -> DVec3 {
+        self.axes.transpose() * (w - self.c) - self.offset
+    }
+    /// ct-teeth.js의 치아 하나 (pos, axes 앞까지)와 표의 한 줄
+    fn record(&self) -> Result<(String, String), String> {
+        let widest = if self.remnant { &self.whole } else { &self.crown.0 }; // 뿌리 조각은 전체 폭을, 치아는 머리 폭을 자리 폭으로 쓴다
+        let span = |g: fn(&DVec3) -> f64| widest.iter().map(g).fold(f64::MIN, f64::max) - widest.iter().map(g).fold(f64::MAX, f64::min);
+        let (w, d) = (span(|p| p.x), span(|p| p.z));
+        let mut record = format!(
+            "\"w\":{},\"d\":{},\"h\":{},\"root\":{},\"crown\":{},\"rootMesh\":{}",
+            num(round(w, 2)),
+            num(round(d, 2)),
+            num(round(self.clamped, 2)),
+            num(round(self.length - self.clamped, 2)),
+            pack(&self.crown.0, &self.crown.1)?,
+            pack(&self.root.0, &self.root.1)?
+        );
+        if self.remnant {
+            record += ",\"remnant\":true";
+        }
+        let note = if self.from != self.fdi { format!("  (분할 번호 {})", self.from) } else { String::new() };
+        let line = format!(
+            "{:3} {w:6.1} {d:6.1} {:7.1} {:8.1}   {:14} {}+{}{note}{}",
+            self.fdi,
+            self.clamped,
+            self.length - self.clamped,
+            self.basis,
+            self.crown.1.len(),
+            self.root.1.len(),
+            self.scan_note
+        );
+        Ok((record, line))
+    }
 }
 
 /// 치아 목 높이를 정하고, 자기 좌표의 메시로 만들어 머리와 뿌리로 자른다
@@ -353,7 +403,8 @@ fn shape(ct: &Volume, seg: &Seg, stats: &HashMap<u8, seg::LabelStats>, fdi: u32,
         Some(l) => seg::label_surface(ct, &seg.labels, l, &stats[&l], 0.5, o.tris),
     }
     .ok_or(format!("{fdi}번: 표면을 뽑지 못했습니다"))?;
-    let verts: Vec<DVec3> = mesh.pos.iter().map(|p| t.local(three(p.x as f64, p.y as f64, p.z as f64))).collect();
+    let surface: Vec<DVec3> = mesh.pos.iter().map(|p| three(p.x as f64, p.y as f64, p.z as f64)).collect();
+    let verts: Vec<DVec3> = surface.iter().map(|p| t.local(*p)).collect();
     let tip = verts.iter().map(|v| v.y).fold(f64::MIN, f64::max);
     let apex = verts.iter().map(|v| v.y).fold(f64::MAX, f64::min);
     let length = tip - apex;
@@ -391,34 +442,41 @@ fn shape(ct: &Volume, seg: &Seg, stats: &HashMap<u8, seg::LabelStats>, fdi: u32,
         // 면이 바깥을 향하게 맞춘다
         faces.iter_mut().for_each(|f| f.reverse());
     }
-    let (cv, cf) = clip(&v, &faces, true);
-    let (rv, rf) = clip(&v, &faces, false);
-    let widest = if remnant { &v } else { &cv }; // 뿌리 조각은 전체 폭을, 치아는 머리 폭을 자리 폭으로 쓴다
-    let span = |g: fn(&DVec3) -> f64| widest.iter().map(g).fold(f64::MIN, f64::max) - widest.iter().map(g).fold(f64::MAX, f64::min);
-    let (w, d) = (span(|p| p.x), span(|p| p.z));
-    let mut record = format!(
-        "\"w\":{},\"d\":{},\"h\":{},\"root\":{},\"crown\":{},\"rootMesh\":{}",
-        num(round(w, 2)),
-        num(round(d, 2)),
-        num(round(clamped, 2)),
-        num(round(length - clamped, 2)),
-        pack(&cv, &cf)?,
-        pack(&rv, &rf)?
-    );
-    if remnant {
-        record += ",\"remnant\":true";
-    }
-    let note = if t.from != fdi { format!("  (분할 번호 {})", t.from) } else { String::new() };
-    let line = format!("{fdi:3} {w:6.1} {d:6.1} {clamped:7.1} {:8.1}   {basis:14} {}+{}{note}", length - clamped, cf.len(), rf.len());
+    let crown = clip(&v, &faces, true);
+    let root = clip(&v, &faces, false);
     Ok(Shape {
         fdi,
-        record,
         neck: t.world(offset),
         tip: t.world(DVec3::new(offset.x, tip, offset.z)),
         axes: DMat3::from_cols(t.x, t.y, t.z),
         remnant,
-        line,
+        from: t.from,
+        c: t.c,
+        offset,
+        whole: v,
+        crown,
+        root,
+        clamped,
+        length,
+        basis,
+        surface,
+        scan_note: String::new(),
     })
+}
+
+/// 모형 좌표로 옮기는 변환 (place_in_model이 정한 것)
+struct ModelXf {
+    rot: DMat3,
+    shift: DVec3,
+    r_low: DMat3,
+    low_shift: DVec3,
+}
+
+impl ModelXf {
+    fn apply(&self, p: DVec3, lower: bool) -> DVec3 {
+        let m = self.rot * p + self.shift;
+        if lower { self.r_low * (m - PIVOT) + PIVOT + self.low_shift } else { m }
+    }
 }
 
 struct Placed {
@@ -431,7 +489,7 @@ struct Placed {
 ///   2) 위 가운데 앞니 사이를 x = 0, 그 목을 z = FRONT_NECK_Z에 두고, 위 치아 끝의 평균 높이를 UPPER_TIP_Y에 둔다
 ///   3) CT를 찍을 때 입을 조금 벌리고 있었으므로, 아래 치아는 모형의 턱 회전 중심(PIVOT)을 기준으로
 ///      교합면이 수평이 되게 돌린 뒤 치아 끝의 평균 높이를 LOWER_TIP_Y에 둔다
-fn place_in_model(shapes: &[Shape], log: Log) -> Result<(Vec<Placed>, [[f64; 3]; 2]), String> {
+fn place_in_model(shapes: &[Shape], log: Log) -> Result<(Vec<Placed>, [[f64; 3]; 2], ModelXf), String> {
     let upper: Vec<&Shape> = shapes.iter().filter(|s| s.fdi < 30).collect();
     let up_tips: Vec<DVec3> = upper.iter().filter(|s| !s.remnant).map(|s| s.tip).collect();
     let low_tips: Vec<DVec3> = shapes.iter().filter(|s| s.fdi > 30 && !s.remnant).map(|s| s.tip).collect();
@@ -488,7 +546,7 @@ fn place_in_model(shapes: &[Shape], log: Log) -> Result<(Vec<Placed>, [[f64; 3];
         arch[j] = p;
         log(format!("{name}턱 치열궁 a={:.1} b={:.1} z0={:.1}  (치아 목과의 거리 RMS {rms:.2}mm)", p[0], p[1], p[2]));
     }
-    Ok((placed, arch))
+    Ok((placed, arch, ModelXf { rot, shift, r_low, low_shift }))
 }
 
 /// 치아를 모아 ct-teeth.js를 만든다. 뿌리 조각 후보는 번호(fdi)를 붙인 것만 쓴다
@@ -592,27 +650,89 @@ pub fn write_model_js(ct: &Volume, seg: &Seg, cands: &[Candidate], o: &Options, 
 
     // 3) 치아마다 모양 (서로 독립이라 함께 돌린다)
     let list: Vec<(&u32, &Tooth)> = teeth.iter().collect();
-    let shapes: Vec<Shape> = list.par_iter().map(|(f, t)| shape(ct, seg, &stats, **f, t, o)).collect::<Result<_, _>>()?;
+    let mut shapes: Vec<Shape> = list.par_iter().map(|(f, t)| shape(ct, seg, &stats, **f, t, o)).collect::<Result<_, _>>()?;
+
+    // 3-2) 구강 스캔: 치아 머리를 스캔 표면에 붙이고, 잇몸을 가를 치아 면을 모은다
+    let mut scans = None;
+    if let Some(dir) = &o.scan {
+        let teeth_pts: Vec<(u32, Vec<DVec3>)> = shapes.iter().filter(|s| !s.remnant).map(|s| (s.fdi, s.surface.clone())).collect();
+        let [(up, fit_u), (lo, fit_l)] = scan::load_and_register(dir, &teeth_pts, log)?; // 스캔은 이 함수 안의 좌표(lps→three)로 옮겨져 온다
+        let grids = [scan::Grid::new(up.pos.clone(), 0.5), scan::Grid::new(lo.pos.clone(), 0.5)];
+        let normals = [up.vertex_normals(), lo.vertex_normals()];
+        let fits: HashMap<u32, f64> = fit_u.per_tooth.iter().chain(&fit_l.per_tooth).copied().collect();
+        shapes.par_iter_mut().for_each(|s| {
+            let j = (s.fdi > 30) as usize;
+            let fit = fits.get(&s.fdi).copied();
+            if s.remnant {
+                s.scan_note = "  스캔: 뿌리 조각이라 그대로".into();
+            } else if fit.map_or(true, |f| f > scan::FIT_LIMIT_MM) {
+                s.scan_note = format!("  스캔: 정합 거리 {}mm라 그대로", fit.map_or("-".into(), |f| format!("{f:.3}")));
+            } else {
+                let (v, f, share) = scan::snap_crown(&s.crown.0, &s.crown.1, &grids[j], &normals[j], |l| s.world(l), |w| s.local(w), |n| s.axes * n);
+                s.crown = (v, f);
+                s.scan_note = format!("  스캔: 머리 점의 {:.0}%를 스캔에 붙임", 100.0 * share);
+            }
+        });
+        scans = Some(([up, lo], fits));
+    }
     log("번호  폭    두께  머리높이 뿌리길이  목 높이 기준   삼각형(머리+뿌리)".into());
+    let mut records = Vec::new();
     for s in &shapes {
-        log(s.line.clone());
+        let (record, line) = s.record()?;
+        log(line);
+        records.push(record);
     }
 
     // 4) 실제 자리(치아 목의 위치와 축)를 모형 좌표로
-    let (placed, arch) = place_in_model(&shapes, log)?;
+    let (placed, arch, xf) = place_in_model(&shapes, log)?;
+
+    // 5) 잇몸: 스캔에서 치아 면(스캔에 붙인 머리 포함)을 뺀 나머지를 모형 좌표로
+    let mut gum_json = String::new();
+    if let Some((surfaces, fits)) = &scans {
+        let mut parts = Vec::new();
+        for (j, jaw) in ["U", "L"].iter().enumerate() {
+            let teeth: Vec<(Vec<DVec3>, bool)> = shapes
+                .iter()
+                .filter(|s| (s.fdi > 30) == (j == 1))
+                .flat_map(|s| {
+                    let poor = !s.remnant && fits.get(&s.fdi).map_or(true, |f| *f > scan::FIT_LIMIT_MM);
+                    let mut v = vec![(s.surface.clone(), poor)];
+                    if s.scan_note.contains("붙임") {
+                        v.push((s.crown.0.iter().map(|l| s.world(*l)).collect(), false));
+                    }
+                    v
+                })
+                .collect();
+            let g = scan::gum(&surfaces[j], &teeth);
+            let m = ctproc::simplify(
+                &ctproc::Mesh { pos: g.pos.iter().map(|p| p.as_vec3()).collect(), idx: g.faces.iter().flatten().copied().collect() },
+                30_000,
+            );
+            let pos: Vec<DVec3> = m.pos.iter().map(|p| xf.apply(p.as_dvec3(), j == 1)).collect();
+            let faces: Vec<[u32; 3]> = m.idx.chunks_exact(3).map(|f| [f[0], f[1], f[2]]).collect();
+            log(format!("{}턱 잇몸: 삼각형 {}개", if j == 0 { "위" } else { "아래" }, faces.len()));
+            parts.push(format!("\"{jaw}\":{}", pack(&pos, &faces)?));
+        }
+        gum_json = format!(",\"gum\":{{{}}}", parts.join(","));
+    }
 
     let mut js = String::new();
     js += "// CT에서 뽑은 치아별 실제 모양과 자리. tools/ct3d/teeth_for_model.py(또는 tools/ct3d-rs의 --model-js)가 만든 파일이라 직접 고치지 않는다.\n";
     js += "// 모양은 치아마다 자기 좌표(원점: 치아 목, +y: 머리 쪽, +z: 볼·입술 쪽)이고 좌표 단위는 unit(mm)이다.\n";
     js += "// pos와 axes는 모형 좌표에서 그 자기 좌표의 원점과 x, y, z축이다. arch는 치아 목에 맞춘 치열궁 [a, b, z0]이다.\n";
+    if scans.is_some() {
+        js += "// gum은 구강 스캔에서 치아를 뺀 잇몸이고 모형 좌표다. 치아 머리는 구강 스캔으로 다듬었다.\n";
+    }
     let arr = |v: &[f64]| v.iter().map(|x| num(*x)).collect::<Vec<_>>().join(",");
     let _ = write!(js, "window.CT_TEETH = {{\"unit\":{},\"arch\":{{\"U\":[{}],\"L\":[{}]}},\"teeth\":{{", num(UNIT_MM), arr(&arch[0]), arr(&arch[1]));
-    for (k, (s, p)) in shapes.iter().zip(&placed).enumerate() {
+    for (k, ((s, p), record)) in shapes.iter().zip(&placed).zip(&records).enumerate() {
         let pos = p.pos.to_array().map(|v| round(v, 3));
         let axes: Vec<f64> = (0..3).flat_map(|c| p.axes.col(c).to_array()).map(|v| round(v, 4)).collect();
-        let _ = write!(js, "{}\"{}\":{{{},\"pos\":[{}],\"axes\":[{}]}}", if k > 0 { "," } else { "" }, s.fdi, s.record, arr(&pos), arr(&axes));
+        let _ = write!(js, "{}\"{}\":{{{},\"pos\":[{}],\"axes\":[{}]}}", if k > 0 { "," } else { "" }, s.fdi, record, arr(&pos), arr(&axes));
     }
-    js += "}};\n";
+    js += "}";
+    js += &gum_json;
+    js += "};\n";
     std::fs::write(out, &js).map_err(|e| format!("{}에 저장하지 못했습니다: {e}", out.display()))?;
     let n_rem = shapes.iter().filter(|s| s.remnant).count();
     log(format!(
