@@ -1,0 +1,17 @@
+[package]
+name = "ct3d-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "CT에서 뽑은 치아·뼈 메시(GLB)를 보는 egui 데스크톱 뷰어 (Rust 전환 1단계 시험)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eframe = { version = "0.37", features = ["wgpu"] }
+gltf = "1.4"
+glam = { version = "0.34", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json = "1"
+
+[profile.release]
+debug = false
