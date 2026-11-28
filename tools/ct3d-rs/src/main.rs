@@ -6,12 +6,14 @@
 //! 사용법:
 //!     ct3d-viewer [파일.glb | DICOM 폴더] [--view front|right|left|top|bottom] [--hide jaw,sinus]
 //!                 [--bone 0..100] [--cut 0..100] [--pick 구조이름] [--export 저장.glb] [--screenshot 저장.png]
-//!                 [--seg 분할폴더 [--assign 1:47,2:46] [--ai-jaws]]
+//!                 [--seg 분할폴더 [--assign 1:47,2:46] [--ai-jaws] [--model-js ct-teeth.js [--remap 42:41]]]
 //! DICOM 폴더를 주면 뼈와 치아 표면을 그 자리에서 만든다(tools/ct3d/volume_to_mesh.py와 같은 순서).
 //! --seg로 segment_teeth.py의 출력 폴더를 함께 주면 구조별 메시를 만든다(find_remnants.py, labels_to_mesh.py와 같은 순서).
+//! --model-js를 주면 창을 열지 않고 치열 모형용 ct-teeth.js만 만든다(teeth_for_model.py와 같은 순서).
 //! 파일이나 폴더는 창에 끌어다 놓아도 열린다. --screenshot을 주면 화면을 PNG로 저장하고 닫는다(확인용).
 
 mod ctproc;
+mod model;
 mod render;
 mod scene;
 mod seg;
@@ -44,6 +46,19 @@ struct Args {
     seg: Option<PathBuf>,      // segment_teeth.py의 출력 폴더
     assign: std::collections::HashMap<usize, u32>, // 뿌리 조각 후보 번호 → FDI 번호
     ai_jaws: bool,
+    model_js: Option<PathBuf>, // 치열 모형용 ct-teeth.js를 만들고 끝낸다
+    remap: std::collections::HashMap<u32, u32>, // 분할 번호 → 모형 번호
+}
+
+/// "1:47,2:46" 꼴을 읽는다
+fn pairs<K: std::str::FromStr + std::hash::Hash + Eq, V: std::str::FromStr>(s: Option<String>) -> std::collections::HashMap<K, V> {
+    s.unwrap_or_default()
+        .split(',')
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once(':')?;
+            Some((k.trim().parse().ok()?, v.trim().parse().ok()?))
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -69,17 +84,9 @@ fn parse_args() -> Args {
             "--export" => a.export = it.next().map(PathBuf::from),
             "--seg" => a.seg = it.next().map(PathBuf::from),
             "--ai-jaws" => a.ai_jaws = true,
-            "--assign" => {
-                a.assign = it
-                    .next()
-                    .unwrap_or_default()
-                    .split(',')
-                    .filter_map(|kv| {
-                        let (k, v) = kv.split_once(':')?;
-                        Some((k.trim().parse().ok()?, v.trim().parse().ok()?))
-                    })
-                    .collect()
-            }
+            "--assign" => a.assign = pairs(it.next()),
+            "--remap" => a.remap = pairs(it.next()),
+            "--model-js" => a.model_js = it.next().map(PathBuf::from),
             "--click" => {
                 a.click = it.next().and_then(|v| {
                     let (x, y) = v.split_once(',')?;
@@ -285,6 +292,12 @@ impl App {
 
 /// DICOM과 AI 분할 결과로 구조별 메시를 만든다
 fn segmented_meshes(dicom: &std::path::Path, o: &SegOptions, log: ctproc::Log) -> Result<Vec<Part>, String> {
+    let (ct, s, cands) = load_segmentation(dicom, o, log)?;
+    Ok(seg::part_meshes(&ct, &s, &cands, o.ai_jaws, log))
+}
+
+/// DICOM과 AI 분할 결과를 읽고 뿌리 조각 후보를 찾는다
+fn load_segmentation(dicom: &std::path::Path, o: &SegOptions, log: ctproc::Log) -> Result<(ctproc::Volume, seg::Seg, Vec<seg::Candidate>), String> {
     let t = std::time::Instant::now();
     let ct = ctproc::read_dicom_dir(dicom)?;
     log(format!("DICOM 읽음 ({:.1}초)", t.elapsed().as_secs_f32()));
@@ -299,7 +312,19 @@ fn segmented_meshes(dicom: &std::path::Path, o: &SegOptions, log: ctproc::Log) -
     let (sum, n) = s.labels.iter().zip(&ct.data).filter(|(l, _)| tooth_ids.contains(l)).fold((0f64, 0usize), |(a, b), (_, &v)| (a + v as f64, b + 1));
     log(format!("분할 결과 읽음: 구조 {}개, 치아로 잡힌 칸의 평균 밝기 {:.0} ({:.1}초)", s.names.len(), sum / n.max(1) as f64, t.elapsed().as_secs_f32()));
     let cands = seg::find_remnants(&ct, &s, &o.assign, log);
-    Ok(seg::part_meshes(&ct, &s, &cands, o.ai_jaws, log))
+    Ok((ct, s, cands))
+}
+
+/// 창 없이 치열 모형용 ct-teeth.js를 만든다
+fn model_js(args: &Args, out: &std::path::Path) -> Result<(), String> {
+    let (Some(dicom), Some(dir)) = (args.file.as_ref().filter(|p| p.is_dir()), args.seg.clone()) else {
+        return Err("--model-js에는 DICOM 폴더와 --seg 분할폴더가 필요합니다".into());
+    };
+    let log = |s: String| println!("{s}");
+    let o = SegOptions { dir, assign: args.assign.clone(), ai_jaws: args.ai_jaws };
+    let (ct, s, cands) = load_segmentation(dicom, &o, &log)?;
+    let opts = model::Options { remap: args.remap.clone(), ..Default::default() };
+    model::write_model_js(&ct, &s, &cands, &opts, out, &log)
 }
 
 fn install_korean_font(ctx: &egui::Context) {
@@ -509,6 +534,13 @@ impl eframe::App for App {
 
 fn main() -> eframe::Result {
     let args = parse_args();
+    if let Some(out) = args.model_js.clone() {
+        if let Err(e) = model_js(&args, &out) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 900.0]).with_title("CT 3D 보기").with_drag_and_drop(true),

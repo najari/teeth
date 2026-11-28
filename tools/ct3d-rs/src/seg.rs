@@ -20,7 +20,7 @@ const CORE_HU: f32 = 2200.0; // 덩어리 안에 이만큼 밝은 칸이 있어�
 const MIN_MM3: f32 = 12.0;
 const MAX_MM3: f32 = 800.0;
 const MIN_TOOTH_MM3: f32 = 100.0;
-const REMNANT_HU: f32 = 1500.0; // 뿌리 조각 표면으로 보는 밝기
+pub(crate) const REMNANT_HU: f32 = 1500.0; // 뿌리 조각 표면으로 보는 밝기
 const JAW_BONE_HU: f32 = 1000.0;
 
 pub struct Seg {
@@ -59,18 +59,18 @@ pub fn read_seg(dir: &Path, ct: &Volume) -> Result<Seg, String> {
     Ok(Seg { labels, names })
 }
 
-fn fdi_of(name: &str) -> Option<u32> {
+pub(crate) fn fdi_of(name: &str) -> Option<u32> {
     name.rfind("fdi").and_then(|p| name[p + 3..].parse().ok())
 }
 
-struct LabelStats {
-    count: usize,
-    lo: [usize; 3],
-    hi: [usize; 3],
+pub(crate) struct LabelStats {
+    pub count: usize,
+    pub lo: [usize; 3],
+    pub hi: [usize; 3],
     sum: [f64; 3],
 }
 
-fn label_stats(labels: &[u8], dims: [usize; 3]) -> HashMap<u8, LabelStats> {
+pub(crate) fn label_stats(labels: &[u8], dims: [usize; 3]) -> HashMap<u8, LabelStats> {
     let [nx, ny, _] = dims;
     let mut s: HashMap<u8, LabelStats> = HashMap::new();
     for (i, &l) in labels.iter().enumerate() {
@@ -280,16 +280,16 @@ fn target_tris(kind: &str) -> usize {
     }
 }
 
-fn finish(mut m: Mesh, kind: &str) -> Option<Mesh> {
+fn finish(mut m: Mesh, target: usize) -> Option<Mesh> {
     if m.idx.is_empty() {
         return None;
     }
     ctproc::taubin(&mut m, 10);
-    Some(ctproc::simplify(&m, target_tris(kind)))
+    Some(ctproc::simplify(&m, target))
 }
 
 /// 칸 목록의 둘레를 잘라 CT 밝기 level의 면을 뽑는다 (속이 빈 얇은 조각은 마스크보다 밝기가 모양을 덜 뭉갠다)
-fn hu_surface(ct: &Volume, voxels: &[usize], level: f32, kind: &str) -> Option<Mesh> {
+pub(crate) fn hu_surface(ct: &Volume, voxels: &[usize], level: f32, target: usize) -> Option<Mesh> {
     let [nx, ny, nz] = ct.dims;
     let (mut lo, mut hi) = ([usize::MAX; 3], [0usize; 3]);
     for &i in voxels {
@@ -315,11 +315,11 @@ fn hu_surface(ct: &Volume, voxels: &[usize], level: f32, kind: &str) -> Option<M
             *x = AIR;
         }
     });
-    finish(ctproc::isosurface(&v, level), kind)
+    finish(ctproc::isosurface(&v, level), target)
 }
 
 /// 번호 볼륨에서 한 구조의 면을 뽑는다. 0.5mm 격자 결과라 계단이 지므로 살짝 흐린 뒤 0.5에서 뽑는다
-fn label_surface(ct: &Volume, labels: &[u8], label: u8, s: &LabelStats, kind: &str) -> Option<Mesh> {
+pub(crate) fn label_surface(ct: &Volume, labels: &[u8], label: u8, s: &LabelStats, sigma_mm: f32, target: usize) -> Option<Mesh> {
     let [nx, ny, nz] = ct.dims;
     let lo = s.lo.map(|v| v.saturating_sub(8));
     let hi = [(s.hi[0] + 9).min(nx), (s.hi[1] + 9).min(ny), (s.hi[2] + 9).min(nz)];
@@ -335,8 +335,8 @@ fn label_surface(ct: &Volume, labels: &[u8], label: u8, s: &LabelStats, kind: &s
         }
     });
     let mut v = Volume { dims: d, spacing: ct.spacing, origin: [0, 1, 2].map(|a| ct.origin[a] + lo[a] as f32 * ct.spacing[a]), data };
-    ctproc::gaussian(&mut v, if matches!(kind, "pulp" | "canal") { 0.3 } else { 0.5 });
-    finish(ctproc::isosurface(&v, 0.5), kind)
+    ctproc::gaussian(&mut v, sigma_mm);
+    finish(ctproc::isosurface(&v, 0.5), target)
 }
 
 /// 2×2×2 칸 가운데 하나라도 차 있으면 참
@@ -455,7 +455,7 @@ fn whole_jaws(ct: &Volume, seg: &Seg, lower_id: u8, upper_id: u8, lower_teeth: &
         let vol = solid.iter().filter(|&&s| s).count() as f32 * voxel_mm3;
         let mut v = Volume { dims: d, spacing: half.spacing, origin: half.origin, data: solid.iter().map(|&s| if s { 1.0 } else { 0.0 }).collect() };
         ctproc::gaussian(&mut v, 0.5);
-        if let Some(m) = finish(ctproc::isosurface(&v, 0.5), "jaw") {
+        if let Some(m) = finish(ctproc::isosurface(&v, 0.5), target_tris("jaw")) {
             out.push((name.to_string(), m, vol));
         }
     }
@@ -482,7 +482,7 @@ pub fn part_meshes(ct: &Volume, seg: &Seg, cands: &[Candidate], ai_jaws: bool, l
         .map(|c| {
             let name = c.fdi.map_or(format!("fragment_{}", c.id), |f| format!("remnant_fdi{f}"));
             let kind = KINDS[kind_of(&name)].key;
-            (name, hu_surface(ct, &c.voxels, REMNANT_HU, kind), c.volume_mm3)
+            (name, hu_surface(ct, &c.voxels, REMNANT_HU, target_tris(kind)), c.volume_mm3)
         })
         .collect();
     for (name, m, vol) in mesh_list {
@@ -518,7 +518,8 @@ pub fn part_meshes(ct: &Volume, seg: &Seg, cands: &[Candidate], ai_jaws: bool, l
                 }
             }
             let kind = KINDS[kind_of(name)].key;
-            let m = label_surface(ct, &seg.labels, *l, s, kind);
+            let sigma = if matches!(kind, "pulp" | "canal") { 0.3 } else { 0.5 };
+            let m = label_surface(ct, &seg.labels, *l, s, sigma, target_tris(kind));
             let why = if m.is_none() { "너무 작아 메시에서 빠짐" } else { "" };
             (name.to_string(), m, vol, why)
         })
