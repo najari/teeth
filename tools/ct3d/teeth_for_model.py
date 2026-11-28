@@ -15,6 +15,11 @@
 find_remnants.py에서 번호를 붙인 뿌리 조각도 같은 형식으로 담고 remnant 표시를 붙인다.
 뿌리 조각은 위쪽 일부를 잇몸 위로 나온 부분(crown)으로, 나머지를 뿌리(root)로 나눈다.
 
+--scan-dir와 --scan-reg(scan_to_ct.py의 scan_registration.json)를 주면 구강 스캔을 쓴다.
+    치아 머리: CT 머리를 한 번 잘게 나눈 뒤 가까운 스캔 표면으로 붙인다(스캔은 0.1mm 간격이라 교두와 홈이 살아난다).
+              치아 목 근처는 뿌리와 이어지도록 그대로 두고, 스캔과 잘 맞지 않은 치아(거리 중앙값 0.4mm 넘음)는 건드리지 않는다.
+    잇몸: 스캔에서 CT 치아(뿌리 조각 포함) 가까이의 면을 뺀 나머지를 모형 좌표로 옮겨 gum.U, gum.L에 담는다.
+
 출력 파일에는 환자의 CT에서 뽑은 치아 모양이 들어 있다. 공개할지는 따로 정한다.
 """
 import argparse
@@ -139,6 +144,9 @@ def place_in_model(place: dict, out: dict) -> dict:
     opened = np.degrees(np.arccos(np.clip(plane_normal(low_tips)[1], -1, 1)))
     print(f"\n자리 맞추기: CT에서 아래턱은 위턱보다 {opened:.1f}° 벌어져 있어 모형의 턱 회전 중심으로 다물게 돌렸습니다.")
 
+    def to_model_lower(p):
+        return (to_model(p) - PIVOT) @ r_low.T + PIVOT + low_shift
+
     necks = {"U": [], "L": []}
     for f, p in place.items():
         axes = rot @ p["axes"]
@@ -155,7 +163,89 @@ def place_in_model(place: dict, out: dict) -> dict:
         params, rms = fit_arch(np.array(necks[jaw]), start)
         arch[jaw] = params
         print(f"{'위' if jaw == 'U' else '아래'}턱 치열궁 a={params[0]:.1f} b={params[1]:.1f} z0={params[2]:.1f}  (치아 목과의 거리 RMS {rms:.2f}mm)")
-    return arch
+    return arch, {"U": to_model, "L": to_model_lower}
+
+
+# ---------- 구강 스캔 (--scan-dir, --scan-reg) ----------
+SNAP_MM = 0.7          # 치아 머리 점에서 이보다 가까운 스캔 표면에 붙인다(0.35mm 폭으로 서서히)
+FIT_LIMIT_MM = 0.4     # 정합 거리 중앙값이 이보다 큰 치아는 머리를 바꾸지 않는다
+GUM_GAP_POOR_MM = 2.0  # 잇몸: 스캔과 잘 맞지 않은 치아는 이만큼 둘레를 치아로 본다
+GUM_TRIS = 30_000      # 턱마다 잇몸 삼각형 수
+
+
+def load_scans(scan_dir: Path, reg_path: Path, center3: np.ndarray) -> dict:
+    """스캔 STL을 scan_to_ct.py의 정합으로 옮긴다. 좌표는 lps_to_three(환자 좌표) 그대로(볼륨 중심을 빼지 않음)."""
+    from scipy.spatial import cKDTree
+    import trimesh
+    reg = json.loads(reg_path.read_text(encoding="utf-8"))
+    scans = {}
+    for key, jaw in (("upper", "UpperJaw"), ("lower", "LowerJaw")):
+        path = next(p for p in scan_dir.glob("*.stl") if jaw.lower() in p.name.lower())
+        mesh = trimesh.load(path)          # STL은 삼각형마다 꼭짓점이 따로라 합쳐 읽는다
+        T = np.array(reg[key]["scan_to_ct"])
+        v = mesh.vertices @ T[:3, :3].T + T[:3, 3] + center3    # CT 뷰어 좌표 + 볼륨 중심 = lps_to_three 좌표
+        normals = mesh.vertex_normals @ T[:3, :3].T
+        scans[key] = {"v": v, "f": np.asarray(mesh.faces), "n": normals, "tree": cKDTree(v),
+                      "fit": {int(k): float(x) for k, x in reg[key]["per_tooth_mm"].items()}}
+    return scans
+
+
+def snap_crown(cv, cf, scan, c, frame, offset):
+    """치아 머리(자기 좌표)를 한 번 잘게 나눈 뒤 가까운 스캔 표면에 붙인다. 붙인 점의 비율도 돌려준다."""
+    import trimesh
+    v2, f2 = trimesh.remesh.subdivide(cv, cf)
+    world = (v2 + offset) @ frame.T + c
+    d, idx = scan["tree"].query(world)
+    vn = trimesh.Trimesh(v2, f2, process=False).vertex_normals @ frame.T
+    dots = np.einsum("ij,ij->i", vn, scan["n"][idx])
+    sign = np.sign(np.median(dots[d < 0.3])) if np.any(d < 0.3) else 1.0     # 스캔 면의 앞뒤 방향이 반대일 수 있다
+    agree = dots * sign > 0.3                                               # 이웃 치아의 마주 보는 면에는 붙이지 않는다
+    weight = np.clip((SNAP_MM - d) / 0.35, 0, 1) * np.clip(v2[:, 1] / 1.0, 0, 1) * agree   # 치아 목(y=0) 쪽은 그대로
+    target = (scan["v"][idx] - c) @ frame - offset
+    return v2 + weight[:, None] * (target - v2), f2, float((weight > 0.99).mean())
+
+
+def gum_part(scan, tooth_meshes, to_model) -> dict:
+    """스캔에서 치아 면을 뺀 나머지(잇몸)를 모형 좌표의 pack 형식으로.
+
+    거리 하나로 자르면 치아 목 근처가 거칠고 치아 위에 잇몸 조각이 남는다. 그래서 확실한 치아 면(CT 치아에서 0.25mm 안)과
+    확실한 잇몸 면(1mm 넘게 떨어짐)을 씨앗으로 정하고, 나머지는 표면을 따라 더 가까운 씨앗 쪽으로 붙인다.
+    스캔과 잘 맞지 않은 치아는 둘레를 넓게(GUM_GAP_POOR_MM) 치아 쪽 씨앗으로 둔다.
+    """
+    import pyvista as pv
+    from scipy.spatial import cKDTree
+    from scipy.sparse.csgraph import connected_components, dijkstra
+    from scipy.sparse import coo_matrix
+    v, f = scan["v"], scan["f"]
+    d = np.full(len(v), np.inf)
+    poor = np.zeros(len(v), bool)
+    for pts, is_poor in tooth_meshes:
+        dd = cKDTree(pts).query(v, distance_upper_bound=GUM_GAP_POOR_MM + 1.0)[0]
+        d = np.minimum(d, dd)
+        if is_poor:
+            poor |= dd < GUM_GAP_POOR_MM
+    tooth_seed = np.flatnonzero((d < 0.25) | poor)
+    gum_seed = np.flatnonzero((d > 1.0) & ~poor)
+    edges = np.unique(np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1), axis=0)
+    w = np.linalg.norm(v[edges[:, 0]] - v[edges[:, 1]], axis=1) + 1e-6
+    graph = coo_matrix((w, (edges[:, 0], edges[:, 1])), shape=(len(v), len(v))).tocsr()
+    dt = dijkstra(graph, directed=False, indices=tooth_seed, min_only=True)
+    dg = dijkstra(graph, directed=False, indices=gum_seed, min_only=True)
+    keep_v = np.isfinite(dg) & (dg < dt)
+    faces = f[keep_v[f].all(axis=1)]
+    # 작은 섬은 버린다(치아 사이에 남은 조각 등)
+    used, inv = np.unique(faces, return_inverse=True)
+    faces = inv.reshape(-1, 3)
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    n = len(used)
+    _, comp = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n)), directed=False)
+    sizes = np.bincount(comp[faces[:, 0]])
+    faces = faces[sizes[comp[faces[:, 0]]] >= 2000]
+    poly = pv.PolyData(v[used], np.column_stack([np.full(len(faces), 3), faces]).ravel()).clean()
+    if poly.n_cells > GUM_TRIS:
+        poly = poly.decimate(1.0 - GUM_TRIS / poly.n_cells)
+    pts = to_model(np.asarray(poly.points))
+    return {"v": pts, "f": poly.faces.reshape(-1, 4)[:, 1:]}
 
 
 def main() -> None:
@@ -166,7 +256,11 @@ def main() -> None:
     ap.add_argument("--remap", nargs="*", default=[], help="분할 번호:모형 번호")
     ap.add_argument("--enamel", type=float, default=3300.0, help="법랑질로 보는 밝기. 치아 목 높이를 정하는 데 쓴다")
     ap.add_argument("--tris", type=int, default=2600, help="치아 하나의 삼각형 수")
+    ap.add_argument("--scan-dir", type=Path, help="구강 스캔 STL 폴더(UpperJaw, LowerJaw)")
+    ap.add_argument("--scan-reg", type=Path, help="scan_to_ct.py가 만든 scan_registration.json")
     args = ap.parse_args()
+    if bool(args.scan_dir) != bool(args.scan_reg):
+        raise SystemExit("--scan-dir와 --scan-reg는 함께 줘야 합니다.")
     remap = {int(a): int(b) for a, b in (item.split(":") for item in args.remap)}
 
     info = json.loads((args.seg_dir / "segmentation_info.json").read_text(encoding="utf-8"))
@@ -177,6 +271,11 @@ def main() -> None:
     ct_arr = sitk.GetArrayViewFromImage(ct)
     spacing, origin = np.array(labels.GetSpacing()), np.array(labels.GetOrigin())
     voxel_mm3 = float(spacing.prod())
+    scans = None
+    if args.scan_dir:
+        # labels_to_mesh.py와 CT 뷰어는 볼륨 중심을 원점으로 쓴다
+        center = origin + 0.5 * np.array(labels.GetSize()) * spacing
+        scans = load_scans(args.scan_dir, args.scan_reg, lps_to_three(center[None])[0])
     stats = sitk.LabelShapeStatisticsImageFilter()
     stats.Execute(labels)
 
@@ -255,6 +354,7 @@ def main() -> None:
 
     # 3) 치아 목 높이를 정하고, 자기 좌표의 메시로 만들어 머리와 뿌리로 자른다.
     out, place = {}, {}
+    tooth_surfaces = {"U": [], "L": []}      # 잇몸에서 뺄 치아 면(lps_to_three 좌표)과 뺄 폭
     print("번호  폭    두께  머리높이 뿌리길이  목 높이 기준   삼각형(머리+뿌리)")
     for fdi in sorted(teeth):
         t = teeth[fdi]
@@ -296,6 +396,23 @@ def main() -> None:
         whole = pv.PolyData(v, np.column_stack([np.full(len(faces), 3), faces]).ravel())
         crown = to_part(whole.clip(normal=(0, 1, 0), origin=(0, 0, 0), invert=False))
         root = to_part(whole.clip(normal=(0, 1, 0), origin=(0, 0, 0), invert=True))
+        scan_note = ""
+        if scans is not None:
+            scan = scans["upper" if fdi < 30 else "lower"]
+            fit = scan["fit"].get(t["from"])
+            surf_pts = lps_to_three(np.asarray(surf.points))
+            poor = not is_remnant and (fit is None or fit > FIT_LIMIT_MM)
+            tooth_surfaces["U" if fdi < 30 else "L"].append((surf_pts, poor))
+            if is_remnant:
+                scan_note = "  스캔: 뿌리 조각이라 그대로"
+            elif fit is None or fit > FIT_LIMIT_MM:
+                scan_note = f"  스캔: 정합 거리 {fit}mm라 그대로"
+            else:
+                sv, sf, share = snap_crown(crown["v"], crown["f"], scan, t["c"], frame, offset)
+                crown = {"v": sv, "f": sf}
+                # 잇몸을 가를 때는 스캔에 붙인 머리를 기준으로 삼는다(CT 머리보다 스캔의 치아 면에 가깝다)
+                tooth_surfaces["U" if fdi < 30 else "L"].append(((sv + offset) @ frame.T + t["c"], False))
+                scan_note = f"  스캔: 머리 점의 {100 * share:.0f}%를 스캔에 붙임"
         widest = v if is_remnant else crown["v"]      # 뿌리 조각은 전체 폭을, 치아는 머리 폭을 자리 폭으로 쓴다
         w = float(widest[:, 0].max() - widest[:, 0].min())
         d = float(widest[:, 2].max() - widest[:, 2].min())
@@ -311,17 +428,24 @@ def main() -> None:
             "axes": frame, "remnant": is_remnant,
         }
         note = f"  (분할 번호 {t['from']})" if t["from"] != fdi else ""
-        print(f"{fdi:3d} {w:6.1f} {d:6.1f} {clamped:7.1f} {length - clamped:8.1f}   {basis:14s} {len(crown['f'])}+{len(root['f'])}{note}")
+        print(f"{fdi:3d} {w:6.1f} {d:6.1f} {clamped:7.1f} {length - clamped:8.1f}   {basis:14s} {len(crown['f'])}+{len(root['f'])}{note}{scan_note}")
 
     # 4) 치아마다 실제 자리(치아 목의 위치와 축)를 모형 좌표로 옮긴다.
-    arch = place_in_model(place, out)
+    arch, to_model = place_in_model(place, out)
 
     n_remnants = sum(1 for t in out.values() if t.get("remnant"))
     data = {"unit": UNIT_MM, "arch": arch, "teeth": out}
+    if scans is not None:
+        data["gum"] = {}
+        for jaw, key in (("U", "upper"), ("L", "lower")):
+            g = gum_part(scans[key], tooth_surfaces[jaw], to_model[jaw])
+            data["gum"][jaw] = pack(g)
+            print(f"{'위' if jaw == 'U' else '아래'}턱 잇몸: 삼각형 {len(g['f'])}개")
     header = (
         "// CT에서 뽑은 치아별 실제 모양과 자리. tools/ct3d/teeth_for_model.py가 만든 파일이라 직접 고치지 않는다.\n"
         "// 모양은 치아마다 자기 좌표(원점: 치아 목, +y: 머리 쪽, +z: 볼·입술 쪽)이고 좌표 단위는 unit(mm)이다.\n"
         "// pos와 axes는 모형 좌표에서 그 자기 좌표의 원점과 x, y, z축이다. arch는 치아 목에 맞춘 치열궁 [a, b, z0]이다.\n"
+        + ("// gum은 구강 스캔에서 치아를 뺀 잇몸이고 모형 좌표다. 치아 머리는 구강 스캔으로 다듬었다.\n" if scans is not None else "")
     )
     args.out_js.write_text(header + "window.CT_TEETH = " + json.dumps(data, separators=(",", ":")) + ";\n", encoding="utf-8")
     print(f"\n치아 {len(out) - n_remnants}개, 뿌리만 남은 치아 {n_remnants}개, 저장: {args.out_js} ({args.out_js.stat().st_size / 1e6:.2f} MB)")

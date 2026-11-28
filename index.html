@@ -277,7 +277,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
 
   /* ---------- CT에서 뽑은 실제 치아 모양 (ct-teeth.js가 있을 때만) ---------- */
   // 치아마다 자기 좌표다. 원점은 치아 목, +y는 머리 쪽, +z는 볼·입술 쪽. 표준형 치아와 같은 약속이라 같은 자리에 그대로 세운다.
-  var CT = window.CT_TEETH || null, ctCount = 0, ctRemnants = 0, ctPlaced = 0;
+  var CT = window.CT_TEETH || null, ctCount = 0, ctRemnants = 0, ctPlaced = 0, ctGum = 0;
   function b64buffer(s) {
     var bin = atob(s), u = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
@@ -602,14 +602,30 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
       }
       return necks[necks.length - 1];
     }
-    var gum = new THREE.Mesh(buildRidge(arch, jaw, margin, sum + 2.6, 'gum'), gumMat);
+    // ct-teeth.js에 구강 스캔 잇몸(gum)이 있으면 표준형 잇몸 띠와 입천장 대신 그것을 쓴다
+    var scanGum = CT && CT.gum && CT.gum[jaw];
+    var gum = new THREE.Mesh(scanGum ? scanGumGeo(scanGum, arch, margin) : buildRidge(arch, jaw, margin, sum + 2.6, 'gum'), gumMat);
     gum.userData.ridge = jaw; gum.renderOrder = 3; group.add(gum); gumRidges.push(gum);
+    if (scanGum) ctGum++;
     var bone = new THREE.Mesh(buildRidge(arch, jaw, margin, sum + 1.6, 'bone'), boneMat);
     bone.userData.ridge = jaw; group.add(bone); boneMeshes.push(bone);
-    if (jaw === 'U') {
+    if (jaw === 'U' && !scanGum) {
       palateMesh = new THREE.Mesh(buildPalate(arch, 10.5), palateMat);
       group.add(palateMesh);
     }
+  }
+
+  // 구강 스캔에서 뽑은 잇몸. 색은 표준 잇몸 띠처럼 구역의 붉은 정도를 치아 목 가까이에 입힌다
+  function scanGumGeo(part, arch, margin) {
+    var g = ctGeo(part), pos = g.attributes.position, n = pos.count, cols = new Float32Array(n * 3);
+    var gumBase = lin(COLORS.gum), gumRed = lin(0xb4303c), c = new THREE.Color();
+    for (var i = 0; i < n; i++) {
+      var m = margin(arch.nearest(pos.getX(i), pos.getZ(i)));
+      c.copy(gumBase).lerp(gumRed, 0.8 * m.red * (1 - sstep(1, 5, Math.abs(pos.getY(i) - m.y))));
+      cols[3 * i] = c.r; cols[3 * i + 1] = c.g; cols[3 * i + 2] = c.b;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    return g;
   }
 
   // 잇몸 또는 치조골: 치열궁을 따라가는 띠. kind = 'gum' | 'bone'
@@ -686,7 +702,8 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     (ctPlaced
       ? '는 CT에서 뽑은 실제 모양을 CT에서 잰 자리와 기울기 그대로 세운 것입니다. CT를 찍을 때 조금 벌어져 있던 아래턱은 다물게 돌렸습니다. 빈 자리, '
       : '는 CT에서 뽑은 실제 모양을 표준 치열궁 위에 하나씩 세운 것이라 치아 사이 간격과 기울기는 실제와 다릅니다. ') +
-    (ctRemnants ? '' : '뿌리만 남은 치아와 ') + '임플란트, 보철은 표준형입니다.';
+    (ctRemnants ? '' : '뿌리만 남은 치아와 ') + '임플란트, 보철은 표준형입니다.' +
+    (ctGum ? ' 치아 머리는 구강 스캔으로 다듬었고, 잇몸은 구강 스캔을 찍은 때의 모양 그대로입니다.' : '');
   document.querySelectorAll('[data-bone]').forEach(function (el) {
     el.style.background = REGIONS[el.getAttribute('data-bone')].lin.clone().convertLinearToSRGB().getStyle();
   });
