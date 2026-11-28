@@ -122,7 +122,15 @@ impl Part {
 
 /// GLB를 읽는다. 노드마다 메시 하나라고 보고, 노드 이름(없으면 메시 이름)을 구조 이름으로 쓴다.
 pub fn load_glb(path: &Path) -> Result<Vec<Part>, String> {
-    let (doc, buffers, _) = gltf::import(path).map_err(|e| format!("GLB를 읽지 못했습니다: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("GLB를 읽지 못했습니다: {e}"))?;
+    // parts_info.json(labels_to_mesh.py의 출력)이 옆에 있으면 부피를 읽는다.
+    let info = std::fs::read_to_string(path.with_file_name("parts_info.json")).ok();
+    load_glb_bytes(&bytes, info.as_deref())
+}
+
+/// 메모리에 있는 GLB를 읽는다(웹에서 받은 파일, 끌어다 놓은 파일). info는 parts_info.json의 내용
+pub fn load_glb_bytes(bytes: &[u8], info: Option<&str>) -> Result<Vec<Part>, String> {
+    let (doc, buffers, _) = gltf::import_slice(bytes).map_err(|e| format!("GLB를 읽지 못했습니다: {e}"))?;
     let mut parts = Vec::new();
     let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("장면이 없습니다")?;
     for node in scene.nodes() {
@@ -132,10 +140,8 @@ pub fn load_glb(path: &Path) -> Result<Vec<Part>, String> {
         return Err("메시가 없습니다".into());
     }
 
-    // parts_info.json(labels_to_mesh.py의 출력)이 옆에 있으면 부피를 읽는다.
-    let info_path = path.with_file_name("parts_info.json");
-    if let Ok(text) = std::fs::read_to_string(info_path) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+    if let Some(text) = info {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
             for p in v["parts"].as_array().into_iter().flatten() {
                 if let (Some(name), Some(vol)) = (p["name"].as_str(), p["volume_mm3"].as_f64()) {
                     if let Some(part) = parts.iter_mut().find(|x| x.name == name) {

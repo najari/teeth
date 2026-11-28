@@ -31,6 +31,8 @@ meshopt가 C++ 라이브러리를 빌드하므로 C++ 컴파일러(Windows는 Vi
 | `--bone 0..100`, `--cut 0..100` | 뼈 농도, 자르기 |
 | `--pick 구조이름` | 처음에 고를 구조 |
 | `--click 0.5,0.47` | 3D 화면의 그 비율 위치를 누른 것처럼 함(확인용) |
+| `--drag 120,40` | 3D 화면 가운데에서 그만큼(점) 끈 것처럼 함(확인용) |
+| `--wheel 3` | 휠을 그만큼(줄) 굴린 것처럼 함. 양수가 확대(확인용) |
 | `--export 저장.glb` | DICOM에서 만든 메시를 GLB로 저장 |
 | `--seg 분할폴더` | AI 분할 결과(`teeth_labels.nii.gz`, `segmentation_info.json`)로 구조별 메시를 만듦 |
 | `--assign 1:47,2:46` | 뿌리 조각 후보 번호에 치아 번호를 붙임. 후보 목록은 콘솔에 나옴 |
@@ -38,6 +40,23 @@ meshopt가 C++ 라이브러리를 빌드하므로 C++ 컴파일러(Windows는 Vi
 | `--remap 42:41` | 분할 번호를 모형 번호로 바꿈(`--model-js`와 함께) |
 | `--ai-jaws` | 턱뼈를 CT 밝기로 다시 뽑지 않고 AI 결과를 그대로 씀 |
 | `--screenshot 저장.png` | 화면을 저장하고 닫음(확인용). 평균 프레임 시간도 출력 |
+
+## 웹 빌드
+
+GLB를 보는 기능만 웹으로 빌드됩니다. DICOM 처리와 `--model-js`는 데스크톱에서만 됩니다.
+
+```
+cargo install wasm-bindgen-cli --version 0.2.130   # Cargo.lock의 wasm-bindgen과 같은 버전
+cargo build --profile web --target wasm32-unknown-unknown
+wasm-bindgen --target web --no-typescript --out-dir <웹 폴더> target\wasm32-unknown-unknown\web\ct3d-viewer.wasm
+```
+
+`<웹 폴더>`에 [`web/index.html`](web/index.html), GLB, 한글 글꼴 `font.ttf`를 함께 두고 `index.html?glb=teeth_parts.glb&view=front&hide=jaw`처럼 엽니다. GLB 옆에 `parts_info.json`이 있으면 부피도 나옵니다. `bone`, `cut`, `pick`도 같은 이름으로 받습니다. GLB 파일을 창에 끌어다 놓아도 열립니다.
+
+- WebGPU를 쓸 수 있으면 쓰고, 없으면 WebGL2로 그립니다.
+- 크기는 wasm 7.1MB(gzip 2.4MB)입니다. 글꼴은 따로 받으므로 한글만 남긴 작은 글꼴을 쓰는 것이 좋습니다. 맑은 고딕은 다시 배포할 수 없습니다.
+
+## 처리 순서
 
 DICOM 폴더를 열면 단계별 진행과 걸린 시간을 콘솔과 화면에 보여 줍니다. 임계값(뼈 1000, 치아 2800, 법랑질 3300)은 Python 판과 같고, VATECH 콘빔 CT 한 건에 맞춘 값입니다.
 
@@ -54,5 +73,5 @@ DICOM 폴더를 열면 단계별 진행과 걸린 시간을 콘솔과 화면에 
 | `src/shader.wgsl` | 조명, 양면 칠하기, 자르기 평면 |
 
 - 3D 장면은 별도 텍스처에 그려 egui 이미지로 띄웁니다. egui는 텍스처 값을 감마(sRGB) 공간 값으로 그대로 쓰므로, 텍스처는 일반 형식으로 만들고 셰이더가 감마를 입힙니다.
-- 한글은 시스템 글꼴(Windows는 맑은 고딕)을 읽어 씁니다. 웹 빌드에서는 글꼴 파일을 함께 넣어야 합니다.
+- 한글은 시스템 글꼴(Windows는 맑은 고딕)을 읽어 씁니다. 웹에서는 페이지 옆의 `font.ttf`를 받아 씁니다.
 - 메시 파일에는 환자의 형상이 들어 있습니다. 출력 폴더는 저장소 밖에 둡니다.

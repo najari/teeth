@@ -10,12 +10,17 @@
 //! DICOM 폴더를 주면 뼈와 치아 표면을 그 자리에서 만든다(tools/ct3d/volume_to_mesh.py와 같은 순서).
 //! --seg로 segment_teeth.py의 출력 폴더를 함께 주면 구조별 메시를 만든다(find_remnants.py, labels_to_mesh.py와 같은 순서).
 //! --model-js를 주면 창을 열지 않고 치열 모형용 ct-teeth.js만 만든다(teeth_for_model.py와 같은 순서).
+//! --click, --drag, --wheel은 누르기·끌기·휠을 흉내 낸다(확인용).
+//! 웹(wasm) 빌드는 GLB 보기만 한다. 주소의 ?glb=파일.glb로 받는다(web/index.html).
 //! 파일이나 폴더는 창에 끌어다 놓아도 열린다. --screenshot을 주면 화면을 PNG로 저장하고 닫는다(확인용).
 
+#[cfg(not(target_arch = "wasm32"))]
 mod ctproc;
+#[cfg(not(target_arch = "wasm32"))]
 mod model;
 mod render;
 mod scene;
+#[cfg(not(target_arch = "wasm32"))]
 mod seg;
 
 use eframe::egui::{self, Color32, RichText, Sense, Vec2};
@@ -32,6 +37,7 @@ const VIEWS: [(&str, &str, f32, f32); 5] = [
     ("bottom", "아래에서", 0.0, -1.55),
 ];
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // 웹은 DICOM 처리와 명령줄 인자를 쓰지 않는다
 #[derive(Default)]
 struct Args {
     file: Option<PathBuf>,
@@ -42,6 +48,8 @@ struct Args {
     pick: Option<String>,
     screenshot: Option<PathBuf>,
     click: Option<(f32, f32)>, // 3D 화면 안의 비율 좌표(0..1)를 누른 것처럼 한다 (확인용)
+    drag: Option<(f32, f32)>,  // 3D 화면 가운데에서 이만큼(점) 끈 것처럼 한다 (확인용)
+    wheel: Option<f32>,        // 휠을 이만큼(줄) 굴린 것처럼 한다. 양수가 앞으로(확대) (확인용)
     export: Option<PathBuf>,   // DICOM에서 만든 메시를 GLB로 저장
     seg: Option<PathBuf>,      // segment_teeth.py의 출력 폴더
     assign: std::collections::HashMap<usize, u32>, // 뿌리 조각 후보 번호 → FDI 번호
@@ -51,6 +59,7 @@ struct Args {
 }
 
 /// "1:47,2:46" 꼴을 읽는다
+#[cfg(not(target_arch = "wasm32"))]
 fn pairs<K: std::str::FromStr + std::hash::Hash + Eq, V: std::str::FromStr>(s: Option<String>) -> std::collections::HashMap<K, V> {
     s.unwrap_or_default()
         .split(',')
@@ -61,6 +70,7 @@ fn pairs<K: std::str::FromStr + std::hash::Hash + Eq, V: std::str::FromStr>(s: O
         .collect()
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // 웹은 DICOM 처리와 명령줄 인자를 쓰지 않는다
 #[derive(Clone)]
 struct SegOptions {
     dir: PathBuf,
@@ -70,6 +80,7 @@ struct SegOptions {
 
 type Job = std::sync::mpsc::Receiver<Result<Vec<Part>, String>>;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_args() -> Args {
     let mut a = Args::default();
     let mut it = std::env::args().skip(1);
@@ -87,6 +98,11 @@ fn parse_args() -> Args {
             "--assign" => a.assign = pairs(it.next()),
             "--remap" => a.remap = pairs(it.next()),
             "--model-js" => a.model_js = it.next().map(PathBuf::from),
+            "--drag" => a.drag = it.next().and_then(|v| {
+                let (x, y) = v.split_once(',')?;
+                Some((x.parse().ok()?, y.parse().ok()?))
+            }),
+            "--wheel" => a.wheel = it.next().and_then(|v| v.parse().ok()),
             "--click" => {
                 a.click = it.next().and_then(|v| {
                     let (x, y) = v.split_once(',')?;
@@ -99,6 +115,7 @@ fn parse_args() -> Args {
     a
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // 웹은 DICOM 처리와 명령줄 인자를 쓰지 않는다
 struct App {
     renderer: Option<Renderer>,
     parts: Vec<Part>,
@@ -123,6 +140,9 @@ struct App {
     closing: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pending_pick: Option<String>,
     pending_click: Option<(f32, f32)>,
+    pending_drag: Option<(f32, f32)>,
+    pending_wheel: Option<f32>,
+    scene_rect: Option<egui::Rect>,
     export: Option<PathBuf>,
     seg: Option<SegOptions>,
     job: Option<Job>,
@@ -159,6 +179,9 @@ impl App {
             closing: Default::default(),
             pending_pick: args.pick,
             pending_click: args.click,
+            pending_drag: args.drag,
+            pending_wheel: args.wheel,
+            scene_rect: None,
             export: args.export,
             seg: args.seg.map(|dir| SegOptions { dir, assign: args.assign, ai_jaws: args.ai_jaws }),
             job: None,
@@ -185,6 +208,7 @@ impl App {
 
     fn open(&mut self, path: PathBuf) {
         self.file_name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        #[cfg(not(target_arch = "wasm32"))]
         if path.is_dir() {
             // DICOM 폴더: 시간이 걸리므로 따로 돌리고, 진행 상황은 화면에 보여 준다
             let (tx, rx) = std::sync::mpsc::channel();
@@ -221,6 +245,7 @@ impl App {
                 if let Some(r) = self.renderer.as_mut() {
                     r.upload(&parts);
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(path) = self.export.take() {
                     match ctproc::write_glb(&parts, &path) {
                         Ok(()) => println!("저장: {}", path.display()),
@@ -291,12 +316,14 @@ impl App {
 }
 
 /// DICOM과 AI 분할 결과로 구조별 메시를 만든다
+#[cfg(not(target_arch = "wasm32"))]
 fn segmented_meshes(dicom: &std::path::Path, o: &SegOptions, log: ctproc::Log) -> Result<Vec<Part>, String> {
     let (ct, s, cands) = load_segmentation(dicom, o, log)?;
     Ok(seg::part_meshes(&ct, &s, &cands, o.ai_jaws, log))
 }
 
 /// DICOM과 AI 분할 결과를 읽고 뿌리 조각 후보를 찾는다
+#[cfg(not(target_arch = "wasm32"))]
 fn load_segmentation(dicom: &std::path::Path, o: &SegOptions, log: ctproc::Log) -> Result<(ctproc::Volume, seg::Seg, Vec<seg::Candidate>), String> {
     let t = std::time::Instant::now();
     let ct = ctproc::read_dicom_dir(dicom)?;
@@ -316,6 +343,7 @@ fn load_segmentation(dicom: &std::path::Path, o: &SegOptions, log: ctproc::Log) 
 }
 
 /// 창 없이 치열 모형용 ct-teeth.js를 만든다
+#[cfg(not(target_arch = "wasm32"))]
 fn model_js(args: &Args, out: &std::path::Path) -> Result<(), String> {
     let (Some(dicom), Some(dir)) = (args.file.as_ref().filter(|p| p.is_dir()), args.seg.clone()) else {
         return Err("--model-js에는 DICOM 폴더와 --seg 분할폴더가 필요합니다".into());
@@ -328,16 +356,20 @@ fn model_js(args: &Args, out: &std::path::Path) -> Result<(), String> {
 }
 
 fn install_korean_font(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    // 데스크톱에서는 시스템 글꼴을 쓴다. 웹 빌드에서는 글꼴 파일을 함께 넣어야 한다.
+    // 데스크톱에서는 시스템 글꼴을 쓴다. 웹에서는 페이지 옆의 글꼴 파일을 받아 쓴다(web_main)
     for path in [r"C:\Windows\Fonts\malgun.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc", "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"] {
         if let Ok(bytes) = std::fs::read(path) {
-            fonts.font_data.insert("korean".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
-            for fam in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                fonts.families.entry(fam).or_default().insert(0, "korean".into());
-            }
+            set_korean_font(ctx, bytes);
             break;
         }
+    }
+}
+
+fn set_korean_font(ctx: &egui::Context, bytes: Vec<u8>) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("korean".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+    for fam in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(fam).or_default().insert(0, "korean".into());
     }
     ctx.set_fonts(fonts);
 }
@@ -348,7 +380,48 @@ fn swatch(ui: &mut egui::Ui, color: [u8; 3], text: &str) {
     ui.label(RichText::new(text).size(12.0).color(Color32::from_rgb(0x55, 0x67, 0x6a)));
 }
 
+/// 확인용 마우스 흉내: 이 프레임에서 가운데를 누르고, 10프레임에 걸쳐 끈 뒤 놓고, 휠을 굴린다
+const DRAG_FRAME: u32 = 5;
+
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let Some(rect) = self.scene_rect.filter(|_| !self.parts.is_empty()) else { return };
+        let c = rect.center();
+        let f = self.frames + 1; // 이번에 그릴 프레임 번호
+        let none = egui::Modifiers::NONE;
+        let primary = egui::PointerButton::Primary;
+        if let Some((dx, dy)) = self.pending_drag {
+            let at = |k: u32| c + Vec2::new(dx, dy) * (k as f32 / 10.0);
+            match f {
+                _ if f == DRAG_FRAME => {
+                    raw.events.push(egui::Event::PointerMoved(c));
+                    raw.events.push(egui::Event::PointerButton { pos: c, button: primary, pressed: true, modifiers: none });
+                }
+                _ if f > DRAG_FRAME && f <= DRAG_FRAME + 10 => raw.events.push(egui::Event::PointerMoved(at(f - DRAG_FRAME))),
+                _ if f == DRAG_FRAME + 11 => {
+                    raw.events.push(egui::Event::PointerButton { pos: at(10), button: primary, pressed: false, modifiers: none });
+                    self.pending_drag = None;
+                    println!("끌기 뒤: yaw {:.3} pitch {:.3}", self.yaw, self.pitch);
+                }
+                _ => {}
+            }
+        } else if let Some(lines) = self.pending_wheel.filter(|_| f >= DRAG_FRAME + 13) {
+            if f == DRAG_FRAME + 13 {
+                raw.events.push(egui::Event::PointerMoved(c)); // 휠은 3D 화면 위에 있을 때만 듣는다
+                raw.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: Vec2::new(0.0, lines),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                    modifiers: none,
+                });
+            } else if f == DRAG_FRAME + 40 {
+                self.pending_wheel = None;
+                println!("휠 뒤: 거리 배율 {:.3}", self.dist_scale);
+            }
+        }
+    }
+
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &root.ctx().clone();
         if let Some(result) = self.job.as_ref().and_then(|rx| rx.try_recv().ok()) {
@@ -366,9 +439,21 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         // 끌어다 놓은 파일 열기
-        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        if let Some(p) = dropped.into_iter().next() {
-            self.open(p);
+        // (웹에서는 경로 없이 내용만 비동기로 읽을 수 있다)
+        let dropped = ctx.input(|i| i.raw.dropped_files.first().cloned());
+        if let Some(f) = dropped {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.open(f.path().to_path_buf());
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.file_name = f.path().to_string_lossy().into_owned();
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.job = Some(rx);
+                wasm_bindgen_futures::spawn_local(async move {
+                    let r = f.bytes_async().await.and_then(|b| scene::load_glb_bytes(&b, None));
+                    let _ = tx.send(r);
+                });
+            }
         }
         for (i, p) in self.parts.iter().enumerate() {
             self.visible[i] = self.kind_on[p.kind];
@@ -421,6 +506,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::from_rgb(0xee, 0xf2, 0xf1))).show(root, |ui| {
             let rect = ui.max_rect();
+            self.scene_rect = Some(rect);
             let response = ui.allocate_rect(rect, Sense::click_and_drag());
             if self.parts.is_empty() || self.renderer.is_none() {
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, &self.message, egui::FontId::proportional(15.0), Color32::GRAY);
@@ -532,6 +618,106 @@ impl eframe::App for App {
     }
 }
 
+/// 웹: 페이지 주소의 ?glb=파일.glb&view=front&hide=jaw 를 읽어 그 GLB를 받아 보여 준다.
+/// 한글 글꼴은 페이지 옆의 font.ttf를 받아 쓴다(없으면 한글이 네모로 나온다)
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use eframe::wasm_bindgen::JsCast;
+    let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+    let param = |k: &str| query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| *a == k).map(|(_, v)| v.to_string()));
+    let args = Args {
+        view: param("view"),
+        hide: param("hide").map(|v| v.split(',').map(str::to_string).collect()).unwrap_or_default(),
+        bone: param("bone").and_then(|v| v.parse().ok()),
+        cut: param("cut").and_then(|v| v.parse().ok()),
+        pick: param("pick"),
+        ..Default::default()
+    };
+    let glb = param("glb");
+    wasm_bindgen_futures::spawn_local(async move {
+        let canvas = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("ct3d"))
+            .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+            .expect("id가 ct3d인 canvas가 없습니다");
+        let font = fetch_bytes("font.ttf").await.ok();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = glb.clone().unwrap_or_default();
+        let mut options = eframe::WebOptions::default();
+        // 브라우저에 WebGPU가 있다고 나와도 쓸 수 있는 장치가 없으면 wgpu가 WebGL로 넘어가지 않으므로, 미리 확인해 WebGL만 쓰게 한다
+        let webgpu = has_webgpu_adapter().await;
+        web_sys::console::log_1(&format!("ct3d: WebGPU {}", if webgpu { "사용" } else { "없음, WebGL 사용" }).into());
+        if !webgpu {
+            if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut options.wgpu_options.wgpu_setup {
+                c.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+            }
+        }
+        let start = eframe::WebRunner::new()
+            .start(
+                canvas,
+                options,
+                Box::new(move |cc| {
+                    let mut app = App::new(cc, args);
+                    if let Some(bytes) = font {
+                        set_korean_font(&cc.egui_ctx, bytes);
+                    }
+                    if !name.is_empty() {
+                        app.file_name = name.rsplit('/').next().unwrap_or_default().to_string();
+                        app.job = Some(rx);
+                    }
+                    Ok(Box::new(app))
+                }),
+            )
+            .await;
+        if let Err(e) = start {
+            web_sys::console::error_1(&e);
+            return;
+        }
+        if let Some(url) = glb {
+            let info_url = match url.rsplit_once('/') {
+                Some((dir, _)) => format!("{dir}/parts_info.json"),
+                None => "parts_info.json".into(),
+            };
+            let info = match fetch_bytes(&info_url).await {
+                Ok(b) => String::from_utf8(b).ok(),
+                Err(_) => None,
+            };
+            let result = fetch_bytes(&url).await.and_then(|b| scene::load_glb_bytes(&b, info.as_deref()));
+            let _ = tx.send(result);
+        }
+    });
+}
+
+/// navigator.gpu.requestAdapter()가 장치를 주는지
+#[cfg(target_arch = "wasm32")]
+async fn has_webgpu_adapter() -> bool {
+    use eframe::wasm_bindgen::{JsCast, JsValue};
+    use web_sys::js_sys::{Function, Promise, Reflect};
+    let Some(w) = web_sys::window() else { return false };
+    let Ok(gpu) = Reflect::get(&w.navigator(), &JsValue::from_str("gpu")) else { return false };
+    if gpu.is_undefined() || gpu.is_null() {
+        return false;
+    }
+    let Some(request) = Reflect::get(&gpu, &JsValue::from_str("requestAdapter")).ok().and_then(|f| f.dyn_into::<Function>().ok()) else { return false };
+    let Some(promise) = request.call0(&gpu).ok().and_then(|p| p.dyn_into::<Promise>().ok()) else { return false };
+    matches!(wasm_bindgen_futures::JsFuture::from(promise).await, Ok(a) if !a.is_null() && !a.is_undefined())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
+    use eframe::wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    let window = web_sys::window().ok_or("창이 없습니다")?;
+    let resp = JsFuture::from(window.fetch_with_str(url)).await.map_err(|e| format!("{url}: {e:?}"))?;
+    let resp: web_sys::Response = resp.dyn_into().map_err(|_| format!("{url}: 응답이 아닙니다"))?;
+    if !resp.ok() {
+        return Err(format!("{url}: {}", resp.status()));
+    }
+    let buf = JsFuture::from(resp.array_buffer().map_err(|e| format!("{e:?}"))?).await.map_err(|e| format!("{e:?}"))?;
+    Ok(web_sys::js_sys::Uint8Array::new(&buf).to_vec())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let args = parse_args();
     if let Some(out) = args.model_js.clone() {
