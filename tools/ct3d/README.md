@@ -57,8 +57,29 @@ python teeth_for_model.py <분할 폴더> <ct.nii.gz> <저장소>/ct-teeth.js [-
 - `--remap`은 분할 모델이 붙인 번호를 모형의 번호로 바꿀 때 씁니다.
 - `ct-teeth.js`에는 실제 치아 모양이 들어 있습니다. 이 저장소에는 올려 두었습니다.
 
-## 4. 뷰어
+## 4. 구강 스캔 겹치기
+
+```
+python scan_to_ct.py <스캔 폴더> <출력 폴더>/teeth_parts.glb <출력 폴더>
+python build_viewer.py <출력 폴더>/teeth_parts_scan.glb <출력 폴더>/teeth_scan_viewer.html <출력 폴더>/parts_info.json
+```
+
+- 스캔 폴더의 `*UpperJaw*.stl`, `*LowerJaw*.stl`(CEREC/inLab 형식)을 CT 치아의 머리 부분에 맞춥니다. 이 PC에서 약 1분 걸립니다.
+- `teeth_parts.glb`에 `upper_scan`, `lower_scan`을 더한 `teeth_parts_scan.glb`를 만듭니다. 뷰어에서는 "구강 스캔"으로 켜고 끌 수 있습니다.
+- `scan_registration.json`에는 다음을 적습니다.
+  - 턱마다 스캔에서 CT 뷰어 좌표로 옮기는 변환
+  - 치아별 거리
+  - CT와 스캔의 물림 차이
+- 0.6mm 넘게 어긋난 치아는 콘솔에 따로 알립니다.
+- 맞추는 방법과 결과는 [구강 스캔과 CT 결합 검토](../../docs/구강스캔-CT-결합-검토.md)에 있습니다.
+- 스캔과 결과 파일에는 환자의 형상이 들어 있고, 스캔 파일 이름에는 사람 이름이 들어 있을 수 있습니다. 저장소 밖에 둡니다.
+
+## 5. 뷰어
 
 - `viewer_template.html`은 데이터 없이도 열립니다. GLB 파일을 화면에 끌어다 놓으면 브라우저 안에서만 읽어서 보여 줍니다.
-- 메시 이름으로 종류를 정합니다. `bone`, `teeth`는 임계값 메시이고, `..._fdi11` 같은 이름은 자동 분할 결과, `remnant_fdi46`은 뿌리 조각, `fragment_4`는 번호를 붙이지 않은 조각입니다.
+- 메시 이름으로 종류를 정합니다.
+  - `bone`, `teeth`는 임계값 메시입니다.
+  - `..._fdi11` 같은 이름은 자동 분할 결과입니다.
+  - `remnant_fdi46`은 뿌리 조각, `fragment_4`는 번호를 붙이지 않은 조각입니다.
+  - `upper_scan`, `lower_scan`은 구강 스캔입니다.
 - 주소 끝에 `#view=right&bone=100&cut=40&hide=jaw,sinus&pick=implant`처럼 붙이면 그 상태로 열립니다.

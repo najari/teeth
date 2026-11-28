@@ -45,6 +45,14 @@ meshopt가 C++ 라이브러리를 빌드하므로 C++ 컴파일러(Windows는 Vi
 
 GLB를 보는 기능만 웹으로 빌드됩니다. DICOM 처리와 `--model-js`는 데스크톱에서만 됩니다.
 
+Windows에서는 [`view_web.bat`](view_web.bat) 하나로 끝납니다. GLB 파일을 이 파일 위에 끌어다 놓거나 다음처럼 실행합니다.
+
+```
+view_web.bat <출력 폴더>\teeth_parts.glb "view=right&hide=jaw"
+```
+
+빌드에 필요한 도구가 없으면 설치하고, 빌드한 다음 페이지·GLB·글꼴을 `target\web-site`(git이 추적하지 않음)에 모읍니다. 이어서 이 PC에서만 접속되는 서버(127.0.0.1:8000)를 띄우고 브라우저를 엽니다. 서버 창을 닫으면 끝납니다. 첫 빌드는 몇 분 걸립니다. 직접 하려면 아래 순서를 따릅니다.
+
 ```
 cargo install wasm-bindgen-cli --version 0.2.130   # Cargo.lock의 wasm-bindgen과 같은 버전
 cargo build --profile web --target wasm32-unknown-unknown

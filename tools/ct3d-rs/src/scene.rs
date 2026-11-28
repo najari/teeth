@@ -25,6 +25,7 @@ pub const KINDS: &[Kind] = &[
     Kind { key: "crown", label: "크라운", color: [0xc9, 0xdc, 0xee], soft: false },
     Kind { key: "bridge", label: "브릿지", color: [0xe6, 0xd9, 0xf0], soft: false },
     Kind { key: "sinus", label: "상악동", color: [0x8c, 0xbf, 0xe6], soft: true },
+    Kind { key: "scan", label: "구강 스캔", color: [0xd9, 0x8c, 0x8c], soft: true },
     Kind { key: "other", label: "기타", color: [0x99, 0xcc, 0xb3], soft: true },
 ];
 
@@ -41,6 +42,8 @@ fn fdi_of(name: &str) -> Option<u32> {
 pub fn kind_of(name: &str) -> usize {
     let key = if name == "bone" || name == "teeth" {
         name
+    } else if name.ends_with("_scan") {
+        "scan" // scan_to_ct.py가 더한 구강 스캔
     } else if name.starts_with("remnant") {
         "remnant"
     } else if name.contains("pulp") {
@@ -97,6 +100,8 @@ pub fn label_of(name: &str, kind: usize) -> String {
         ("bridge", "브릿지"),
         ("bone", "뼈"),
         ("teeth", "치아"),
+        ("upper_scan", "위턱 구강 스캔"),
+        ("lower_scan", "아래턱 구강 스캔"),
     ]
     .into_iter()
     .collect();

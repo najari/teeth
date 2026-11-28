@@ -182,10 +182,12 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     crown:   { label: '크라운',   color: 0xc9dcee },
     bridge:  { label: '브릿지',   color: 0xe6d9f0 },
     sinus:   { label: '상악동',   color: 0x8cbfe6, soft: true },
+    scan:    { label: '구강 스캔', color: 0xd98c8c, soft: true },
     other:   { label: '기타',     color: 0x99ccb3, soft: true }
   };
   function kindOf(name) {
     if (name === 'bone' || name === 'teeth') return name;
+    if (/_scan$/.test(name)) return 'scan';     // scan_to_ct.py가 더한 구강 스캔
     var m = /fdi(\d+)$/.exec(name);
     if (/^remnant/.test(name)) return 'remnant';
     if (/pulp/.test(name)) return 'pulp';
@@ -206,7 +208,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 80px; hei
     lingual_canal: '혀 쪽 혈관 구멍',
     left_maxillary_sinus: '왼쪽 상악동', right_maxillary_sinus: '오른쪽 상악동',
     pharynx: '목 안 공간', implant: '임플란트', crown: '크라운', bridge: '브릿지',
-    bone: '뼈', teeth: '치아'
+    bone: '뼈', teeth: '치아', upper_scan: '위턱 구강 스캔', lower_scan: '아래턱 구강 스캔'
   };
   function labelOf(name, kind) {
     var m = /fdi(\d+)$/.exec(name);
